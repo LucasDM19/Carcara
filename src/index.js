@@ -160,7 +160,7 @@ async function main() {
 
       // Calcula preço de maker: usa best bid do CLOB se disponível,
       // senão cai para midpoint - margem de segurança
-      const bidPrice = await calcMakerPrice(best.upToken.token_id, "BUY", best.midUp);
+      const bidPrice = await calcMakerPrice(best.upToken.token_id, "BUY", best.midUp, 0.005);
 
       const config = require("./config");
       const result = await placePostOnlyGtdOrder({
@@ -169,6 +169,7 @@ async function main() {
         side: "BUY",
         sizeUsdc: config.maxBetSizeUsdc,
         expiresAt: Math.floor(new Date(best.market.end_date).getTime() / 1000),
+        waitMs: 30_000,    // 30s — janela real para preenchimento maker
         dryRun: mode === "dry",
       });
 
