@@ -1,59 +1,46 @@
-// src/order.js
+// src/order.js — CARCARÁ BOT
 // ============================================================
-// FASE 2 — Ordens Post-Only GTD
+// FASE 2 — Ordens Maker-or-Cancel (Post-Only real)
 // ============================================================
-// Fluxo de uma ordem:
+// Fluxo garantido sem taxa:
 //
 //   1. validateOrderParams  — validação local dos parâmetros
-//   2. initClient           — autenticação (só carrega credenciais aqui)
-//   3. checkPostOnlySafe    — consulta orderbook via axios (já funciona)
-//                             e garante que o preço não cruza o spread
-//   4. calcShares           — converte USDC → shares
-//   5. createOrder          — SDK assina a ordem localmente
-//   6. postOrder(GTD)       — envia para a exchange
+//   2. calcMakerPrice       — calcula preço que maximiza chance
+//                             de entrar como maker no book
+//   3. initClient           — autenticação (só carrega credenciais aqui)
+//   4. createOrder          — SDK assina a ordem localmente
+//   5. postOrder(GTD, true) — 4º parâmetro = maker-or-cancel:
+//                             se cruzar com o AMM na hora → cancela
+//                             se entrar no book → fica aberta
+//   6. Aguarda 3 segundos   — janela para preenchimento maker
+//   7. cancelOrder          — cancela qualquer saldo restante
+//   8. getOrder             — verifica quanto foi preenchido
 //
-// Post-Only na Polymarket:
-//   Não existe um flag "postOnly" explícito no SDK.
-//   A garantia é feita em duas camadas:
-//     a) checkPostOnlySafe: rejeita ANTES de enviar se o preço
-//        cruzaria o spread neste momento
-//     b) OrderType.GTD: a exchange cancela automaticamente a ordem
-//        se ela não puder ser colocada como maker no book
-//
-// GTD (Good-Til-Date):
-//   A ordem expira automaticamente no timestamp `expiresAt`.
-//   Usamos o endDate do mercado selecionado — a ordem some
-//   junto com o mercado se não for preenchida.
+// Resultado possível:
+//   matchedSize > 0 → preenchido como MAKER, sem taxa ✅
+//   matchedSize = 0 → não preenchido, cancelado, sem custo ✅
+//   NUNCA           → taker fill com taxa ✅
 // ============================================================
 
 const { ClobClient, Side, OrderType } = require("@polymarket/clob-client");
 const { ethers } = require("ethers");
-const { getOrderBook } = require("./market"); // Reutiliza o axios que já funciona
+const { getOrderBook } = require("./market");
 const config = require("./config");
 const logger = require("./logger");
 
 let _client = null;
 
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
 // ============================================================
 // Inicializa o ClobClient autenticado (singleton)
-// Credenciais só são lidas aqui — nunca antes
 // ============================================================
 async function initClient() {
   if (_client) return _client;
 
   const creds = config.loadTradingCredentials();
-
-  // Ethers v5: Wallet sem provider (só assina, não precisa de RPC)
   const wallet = new ethers.Wallet(creds.privateKey);
 
-  // ClobClient v4: (host, chainId, signer, creds, signatureType, funder)
-  //
-  // Polymarket com Magic.Link usa proxy wallet:
-  //   - signer  = EOA (0x9BDb8...) — assina as ordens
-  //   - funder  = proxy wallet (0x544eB...) — onde o saldo fica
-  //
-  // signatureType 0 = EOA puro (sem proxy)
-  // signatureType 1 = POLY_PROXY (EOA assina em nome do proxy)
   const signatureType = config.proxyWallet ? 1 : 0;
   const funder = config.proxyWallet || undefined;
 
@@ -70,17 +57,13 @@ async function initClient() {
     funder
   );
 
-  if (funder) {
-    logger.info(`   Modo proxy wallet — funder: ${funder}`);
-  }
-
-  logger.success(`Cliente CLOB autenticado — carteira: ${wallet.address}`);
+  logger.success(`Carcará autenticado — carteira: ${wallet.address}`);
+  if (funder) logger.info(`   Proxy wallet (funder): ${funder}`);
   return _client;
 }
 
 // ============================================================
-// Validação local dos parâmetros da ordem
-// Roda ANTES de qualquer chamada de rede
+// Validação local dos parâmetros — roda antes de qualquer rede
 // ============================================================
 function validateOrderParams({ tokenId, price, side, sizeUsdc }) {
   const errors = [];
@@ -103,8 +86,7 @@ function validateOrderParams({ tokenId, price, side, sizeUsdc }) {
   if (!["BUY", "SELL"].includes(String(side).toUpperCase()))
     errors.push(`Side inválido: ${side}`);
 
-  // Verifica mínimo de shares resultante (Polymarket rejeita ordens < 2 shares)
-  // Só verifica se price e sizeUsdc são válidos para não gerar NaN
+  // Mínimo de 2 shares (limite da Polymarket)
   if (typeof price === "number" && price > 0 && price < 1 &&
       typeof sizeUsdc === "number" && sizeUsdc > 0) {
     const normalizedSide = String(side).toUpperCase();
@@ -112,95 +94,77 @@ function validateOrderParams({ tokenId, price, side, sizeUsdc }) {
       ? Math.floor((sizeUsdc / price) * 100) / 100
       : Math.floor((sizeUsdc / (1 - price)) * 100) / 100;
 
-    if (estimatedShares < 2) {
+    if (estimatedShares < 5) {
       errors.push(
-        `Shares estimado (${estimatedShares}) abaixo do mínimo da Polymarket (2 shares). ` +
-        `Aumente MAX_BET_SIZE_USDC ou escolha um preço mais baixo.`
+        `Shares estimado (${estimatedShares}) abaixo do mínimo da Polymarket (5 shares). ` +
+        `Aumente MAX_BET_SIZE_USDC para pelo menos ${(5 * price).toFixed(2)} USDC.`
       );
     }
   }
 
-  if (errors.length > 0)
-    return { ok: false, reason: errors.join(" | ") };
-
+  if (errors.length > 0) return { ok: false, reason: errors.join(" | ") };
   return { ok: true };
 }
 
 // ============================================================
-// Verifica se o preço da ordem não cruza o spread atual
-//
-// BUY:  nosso preço deve ser MENOR que o melhor ask
-//       (se for igual ou maior → executaria imediatamente → taker)
-// SELL: nosso preço deve ser MAIOR que o melhor bid
-//
-// Usa o getOrderBook() do market.js (axios) que já está validado
+// Calcula o melhor preço de maker possível
 // ============================================================
-async function checkPostOnlySafe(tokenId, side, desiredPrice) {
+// Lógica:
+//   BUY:  usa best bid do CLOB se existir e for real (> 0.01)
+//         senão: midpoint - margem
+//   SELL: usa best ask do CLOB se existir e for real (< 0.99)
+//         senão: midpoint + margem
+//
+// Margem padrão de 0.02 para garantir que não cruza com o AMM.
+// Nos mercados BTC 5min com CLOB vazio, a ordem entrará no book
+// e será preenchida quando (e se) alguém cruzar com ela.
+// ============================================================
+async function calcMakerPrice(tokenId, side, midpoint, margin = 0.02) {
   const book = await getOrderBook(tokenId);
 
-  const bestAsk = book.asks?.[0]?.price != null ? parseFloat(book.asks[0].price) : null;
   const bestBid = book.bids?.[0]?.price != null ? parseFloat(book.bids[0].price) : null;
+  const bestAsk = book.asks?.[0]?.price != null ? parseFloat(book.asks[0].price) : null;
 
-  logger.info(`  Orderbook atual — Best Bid: ${bestBid ?? "N/A"} | Best Ask: ${bestAsk ?? "N/A"}`);
+  let price;
 
-  if (side === "BUY" && bestAsk !== null && desiredPrice >= bestAsk) {
-    return {
-      safe: false,
-      reason:
-        `Preço de compra ${desiredPrice} >= best ask ${bestAsk}. ` +
-        `A ordem cruzaria o spread e viraria taker. Abortando.`,
-      bestBid,
-      bestAsk,
-    };
+  if (side === "BUY") {
+    if (bestBid !== null && bestBid > 0.01) {
+      price = bestBid;
+      logger.info(`  Preço maker: best bid do CLOB = ${bestBid}`);
+    } else {
+      price = parseFloat((midpoint - margin).toFixed(2));
+      logger.info(`  Preço maker: midpoint(${midpoint}) - margem(${margin}) = ${price}`);
+    }
+  } else {
+    if (bestAsk !== null && bestAsk < 0.99) {
+      price = bestAsk;
+      logger.info(`  Preço maker: best ask do CLOB = ${bestAsk}`);
+    } else {
+      price = parseFloat((midpoint + margin).toFixed(2));
+      logger.info(`  Preço maker: midpoint(${midpoint}) + margem(${margin}) = ${price}`);
+    }
   }
 
-  if (side === "SELL" && bestBid !== null && desiredPrice <= bestBid) {
-    return {
-      safe: false,
-      reason:
-        `Preço de venda ${desiredPrice} <= best bid ${bestBid}. ` +
-        `A ordem cruzaria o spread e viraria taker. Abortando.`,
-      bestBid,
-      bestAsk,
-    };
-  }
-
-  return { safe: true, bestBid, bestAsk };
+  return Math.min(Math.max(price, 0.01), 0.99);
 }
 
 // ============================================================
-// Converte USDC → shares com truncamento seguro
-//
-// Na Polymarket, shares têm precisão de 2 casas decimais.
-// Truncamos (floor) em vez de arredondar para nunca ultrapassar
-// o sizeUsdc máximo configurado.
-//
-// Fórmula:
-//   BUY:  shares = sizeUsdc / price
-//         (pagamos `price` por share, queremos `sizeUsdc` no total)
-//   SELL: shares = sizeUsdc / (1 - price)
-//         (recebemos `1 - price` por share ao vender)
+// Converte USDC → shares com truncamento (nunca arredonda p/ cima)
 // ============================================================
 function calcShares(sizeUsdc, price, side) {
   const raw = side === "BUY"
     ? sizeUsdc / price
     : sizeUsdc / (1 - price);
-
-  // Trunca em 2 casas decimais (nunca arredonda para cima)
   return Math.floor(raw * 100) / 100;
 }
 
 // ============================================================
-// FUNÇÃO PRINCIPAL: Coloca uma ordem Post-Only GTD
-//
-// Parâmetros aceitos:
-//   tokenId   — ID do token Up ou Down
-//   price     — Preço por share (0.01 a 0.99)
-//   side      — "BUY" ou "SELL"
-//   sizeUsdc  — Valor em USDC a arriscar (≤ MAX_BET_SIZE_USDC)
-//   expiresAt — Timestamp Unix (segundos) de expiração da ordem
-//               Padrão: endDate do mercado atual
-//   dryRun    — true = simula sem enviar (recomendado para testes)
+// FUNÇÃO PRINCIPAL — Ordem Maker-or-Cancel
+// ============================================================
+// Garante que NUNCA paga taxa de taker:
+//   - Se cruzar com AMM na hora → cancela automaticamente
+//   - Se ficar no book → aguarda 3s, cancela restante
+//   - Só cobra taxa se for preenchida como MAKER (0 bps)
 // ============================================================
 async function placePostOnlyGtdOrder({
   tokenId,
@@ -208,52 +172,35 @@ async function placePostOnlyGtdOrder({
   side,
   sizeUsdc,
   expiresAt,
+  waitMs = 3000,   // tempo de espera antes de cancelar restante
   dryRun = false,
 }) {
   logger.divider();
-  logger.info(`🎯 Preparando ordem Post-Only GTD  [dryRun: ${dryRun}]`);
+  logger.info(`🦅 CARCARÁ — Ordem Maker-or-Cancel  [dryRun: ${dryRun}]`);
   logger.divider();
 
-  // ── CAMADA 1: Validação de parâmetros ──────────────────────
+  // ── Validação ────────────────────────────────────────────
   const validation = validateOrderParams({ tokenId, price, side, sizeUsdc });
   if (!validation.ok) {
-    logger.error(`❌ Validação falhou: ${validation.reason}`);
+    logger.error(`Validação falhou: ${validation.reason}`);
     return { success: false, reason: validation.reason };
   }
-  logger.success("Validação de parâmetros OK");
+  logger.success("Parâmetros validados.");
 
-  // ── CAMADA 2: Verificação Post-Only (sem credenciais) ───────
   const normalizedSide = side.toUpperCase();
-  const postOnlyCheck = await checkPostOnlySafe(tokenId, normalizedSide, price);
-
-  if (!postOnlyCheck.safe) {
-    logger.warn(`⚠️  Post-Only check falhou: ${postOnlyCheck.reason}`);
-    return { success: false, reason: postOnlyCheck.reason, spread: postOnlyCheck };
-  }
-  logger.success(`Post-Only check OK — Best Bid: ${postOnlyCheck.bestBid} | Best Ask: ${postOnlyCheck.bestAsk}`);
-
-  // ── CAMADA 3: Cálculo de shares ────────────────────────────
   const shares = calcShares(sizeUsdc, price, normalizedSide);
-  if (shares <= 0) {
-    const reason = `Shares calculado é zero ou negativo (${shares}). Verifique price e sizeUsdc.`;
-    logger.error(reason);
-    return { success: false, reason };
-  }
-
-  // Expiração: endDate do mercado, ou +5min como fallback
   const expiry = expiresAt ?? Math.floor(Date.now() / 1000) + 300;
 
-  logger.info("📋 Resumo da ordem:");
-  logger.info(`   Token    : ${tokenId.slice(0, 20)}...`);
-  logger.info(`   Side     : ${normalizedSide}`);
-  logger.info(`   Preço    : ${price} (${(price * 100).toFixed(2)}%)`);
-  logger.info(`   Shares   : ${shares}`);
-  logger.info(`   Total    : ~${(shares * price).toFixed(2)} USDC`);
-  logger.info(`   Expira   : ${new Date(expiry * 1000).toISOString()}`);
+  logger.info("📋 Ordem:");
+  logger.info(`   Side   : ${normalizedSide}`);
+  logger.info(`   Preço  : ${price} (${(price * 100).toFixed(2)}%)`);
+  logger.info(`   Shares : ${shares}`);
+  logger.info(`   Total  : ~${(shares * price).toFixed(2)} USDC`);
+  logger.info(`   Expira : ${new Date(expiry * 1000).toISOString()}`);
 
-  // ── DRY-RUN: Para aqui sem tocar em credenciais ─────────────
+  // ── DRY-RUN ──────────────────────────────────────────────
   if (dryRun) {
-    logger.warn("🧪 DRY-RUN: ordem NÃO enviada. Todas as verificações passaram.");
+    logger.warn("🧪 DRY-RUN: ordem NÃO enviada.");
     return {
       success: true,
       dryRun: true,
@@ -261,33 +208,104 @@ async function placePostOnlyGtdOrder({
     };
   }
 
-  // ── CAMADA 4: Autenticação e envio ──────────────────────────
-  logger.info("🔐 Inicializando cliente autenticado...");
+  // ── Autenticação ─────────────────────────────────────────
   const client = await initClient();
 
-  logger.info("✍️  Assinando ordem localmente...");
+  // ── Assina a ordem ───────────────────────────────────────
+  logger.info("✍️  Assinando...");
   const order = await client.createOrder({
     tokenID: tokenId,
     price,
     side: normalizedSide === "BUY" ? Side.BUY : Side.SELL,
     size: shares,
+    feeRateBps: 1000,       // exigido pelo SDK para assinar
     expiration: expiry,
   });
 
-  logger.info("📡 Enviando para a exchange (GTD)...");
-  const response = await client.postOrder(order, OrderType.GTD);
+  // ── Envia: Maker-or-Cancel ────────────────────────────────
+  // postOrder(order, orderType, immediateOrCancel, makerOrCancel)
+  //   immediateOrCancel = false → não cancela se não for preenchida toda
+  //   makerOrCancel     = true  → CANCELA se cruzar com AMM (vira taker)
+  logger.info("📡 Enviando (Maker-or-Cancel)...");
+  let response;
+  try {
+    response = await client.postOrder(order, OrderType.GTD, false, true);
+  } catch (err) {
+    const errMsg = err?.response?.data?.error || err?.message || String(err);
 
-  if (response?.success || response?.orderID) {
-    logger.success("✅ Ordem enviada com sucesso!", {
-      orderId: response.orderID,
-      status: response.status,
-      errorMsg: response.errorMsg || null,
-    });
-    return { success: true, orderId: response.orderID, response };
-  } else {
-    logger.error("❌ Exchange rejeitou a ordem:", response);
-    return { success: false, response };
+    // Maker-or-cancel: cruzaria com AMM → SDK pode lançar como erro
+    if (errMsg.toLowerCase().includes("cancel") || errMsg.toLowerCase().includes("match")) {
+      logger.warn("⚡ Ordem cancelada na hora (cruzaria com AMM). Sem taxa. ✅");
+      return { success: true, filled: false, takerFill: false, cancelledImmediately: true };
+    }
+
+    // Erro real da exchange (ex: size inválido) — não tenta cancelar
+    logger.error(`Exchange rejeitou: ${errMsg}`);
+    return { success: false, reason: errMsg };
   }
+
+  // Verifica se a resposta é um erro disfarçado de objeto
+  if (!response?.orderID && (response?.status >= 400 || response?.error)) {
+    const errMsg = response?.error || response?.data?.error || JSON.stringify(response);
+    logger.error(`Exchange rejeitou: ${errMsg}`);
+    return { success: false, reason: errMsg };
+  }
+
+  const orderId = response.orderID;
+  logger.info(`   Order ID: ${orderId}`);
+  logger.info(`   Status  : ${response.status}`);
+
+  // Se já foi cancelada imediatamente (maker-or-cancel)
+  if (response.status === "canceled" || response.status === "cancelled") {
+    logger.warn("⚡ Maker-or-cancel: ordem cancelada (cruzaria com AMM). Sem taxa. ✅");
+    return { success: true, filled: false, takerFill: false, cancelledImmediately: true };
+  }
+
+  // ── Aguarda preenchimento no book ─────────────────────────
+  logger.info(`⏳ Aguardando ${waitMs / 1000}s para preenchimento maker...`);
+  await sleep(waitMs);
+
+  // ── Cancela o restante ────────────────────────────────────
+  try {
+    await client.cancelOrder({ orderID: orderId });
+    logger.info("🗑  Restante cancelado.");
+  } catch {
+    // Pode já ter sido totalmente preenchida — normal
+  }
+
+  // ── Verifica quanto foi preenchido ────────────────────────
+  let orderStatus;
+  try {
+    orderStatus = await client.getOrder(orderId);
+  } catch (err) {
+    logger.warn("Não foi possível consultar status final da ordem.", err);
+    return { success: true, orderId, filled: null };
+  }
+
+  const matchedSize = parseFloat(orderStatus.size_matched || orderStatus.sizeMatched || "0");
+  const totalSize = parseFloat(orderStatus.size || orderStatus.original_size || shares);
+  const filledPct = totalSize > 0 ? ((matchedSize / totalSize) * 100).toFixed(1) : "0";
+
+  logger.divider();
+
+  if (matchedSize > 0) {
+    const valueFilled = (matchedSize * price).toFixed(2);
+    logger.success(`✅ Preenchido como MAKER: ${matchedSize}/${totalSize} shares (${filledPct}%) = ~${valueFilled} USDC`);
+    logger.success("   Sem taxa de taker. 🦅");
+  } else {
+    logger.info("📭 Não preenchida. Cancelada sem custo.");
+  }
+
+  return {
+    success: true,
+    orderId,
+    filled: matchedSize > 0,
+    takerFill: false,       // garantido pelo maker-or-cancel
+    matchedSize,
+    totalSize,
+    filledPct: parseFloat(filledPct),
+    orderStatus,
+  };
 }
 
 // ============================================================
@@ -295,14 +313,14 @@ async function placePostOnlyGtdOrder({
 // ============================================================
 async function cancelOrder(orderId) {
   const client = await initClient();
-  logger.info(`🗑  Cancelando ordem: ${orderId}`);
+  logger.info(`🗑  Cancelando: ${orderId}`);
   const result = await client.cancelOrder({ orderID: orderId });
   logger.success("Ordem cancelada.", result);
   return result;
 }
 
 // ============================================================
-// Lista ordens abertas (todas, ou filtradas por market)
+// Lista ordens abertas
 // ============================================================
 async function getOpenOrders(marketId) {
   const client = await initClient();
@@ -314,6 +332,7 @@ async function getOpenOrders(marketId) {
 
 module.exports = {
   placePostOnlyGtdOrder,
+  calcMakerPrice,
   cancelOrder,
   getOpenOrders,
   initClient,

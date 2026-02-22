@@ -83,7 +83,7 @@ async function main() {
     // -------------------------------------------------------
     case "order":
     case "dry": {
-      const { placePostOnlyGtdOrder } = require("./order");
+      const { placePostOnlyGtdOrder, calcMakerPrice } = require("./order");
       const { findBtcMarketsViaGamma } = require("./market");
       const { selectBestMarket } = require("./selector");
 
@@ -101,9 +101,9 @@ async function main() {
         process.exit(0);
       }
 
-      // Aposta no token Up — a estratégia completa virá na Fase 4
-      // Por ora: bid 2 centavos abaixo do midpoint (garantia Post-Only)
-      const bidPrice = Math.max(0.01, parseFloat((best.midUp - 0.02).toFixed(2)));
+      // Calcula preço de maker: usa best bid do CLOB se disponível,
+      // senão cai para midpoint - margem de segurança
+      const bidPrice = await calcMakerPrice(best.upToken.token_id, "BUY", best.midUp);
 
       const config = require("./config");
       const result = await placePostOnlyGtdOrder({
