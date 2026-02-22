@@ -1,0 +1,19 @@
+{
+  "name": "polymarket-bot",
+  "version": "1.0.0",
+  "description": "Bot de apostas automatizado na Polymarket — mercado BTC 5 minutos",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "market": "node src/index.js --mode=market",
+    "order": "node src/index.js --mode=order"
+  },
+  "dependencies": {
+    "@polymarket/clob-client": "^4.0.0",
+    "ethers": "^5.7.2",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.0",
+    "chalk": "^4.1.2"
+  }
+}
