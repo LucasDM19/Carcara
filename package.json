@@ -1,7 +1,7 @@
 {
-  "name": "polymarket-bot",
+  "name": "carcara-bot",
   "version": "1.0.0",
-  "description": "Bot de apostas automatizado na Polymarket \u2014 mercado BTC 5 minutos",
+  "description": "Carcar\u00e1 \u2014 Bot de apostas automatizado na Polymarket (BTC 5min)",
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
@@ -14,13 +14,15 @@
     "auth": "node src/index.js --mode=auth --action=check",
     "auth:derive": "node src/index.js --mode=auth --action=derive",
     "auth:create": "node src/index.js --mode=auth --action=create",
-    "auth:approve": "node src/index.js --mode=auth --action=approve"
+    "auth:approve": "node src/index.js --mode=auth --action=approve",
+    "volatility": "node src/index.js --mode=volatility"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",
     "ethers": "^5.7.2",
     "dotenv": "^16.3.1",
     "axios": "^1.6.0",
-    "chalk": "^4.1.2"
+    "chalk": "^4.1.2",
+    "ws": "^8.16.0"
   }
 }

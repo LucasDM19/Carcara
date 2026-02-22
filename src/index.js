@@ -1,6 +1,6 @@
-// src/index.js
+// src/index.js — CARCARÁ
 // ============================================================
-// PONTO DE ENTRADA DO BOT POLYMARKET
+// PONTO DE ENTRADA DO CARCARÁ
 // ============================================================
 // Modos disponíveis via --mode=<modo>:
 //
@@ -24,7 +24,7 @@ async function main() {
   const mode = modeArg ? modeArg.split("=")[1] : "select";
 
   logger.divider();
-  logger.info(`🤖 POLYMARKET BOT iniciando — modo: ${mode.toUpperCase()}`);
+  logger.info(`🦅 CARCARÁ iniciando — modo: ${mode.toUpperCase()}`);
   logger.divider();
 
   switch (mode) {
@@ -68,6 +68,35 @@ async function main() {
     }
 
     // -------------------------------------------------------
+    // VOLATILITY: Monitor standalone de volatilidade
+    // -------------------------------------------------------
+    case "volatility": {
+      const { startVolatilityMonitor, getVolatilityState, formatVolatilityState } = require("./volatility");
+      const chalk = require("chalk");
+
+      logger.info("🦅 CARCARÁ — Monitor de Volatilidade");
+      logger.info("   Atualizando a cada 5s. Ctrl+C para parar.");
+      logger.divider();
+
+      startVolatilityMonitor();
+
+      setInterval(() => {
+        const state = getVolatilityState();
+        const line = formatVolatilityState(state);
+        if (state.level === "STORM") console.log(chalk.red(`[${new Date().toISOString()}] ${line}`));
+        else if (state.level === "ALERT") console.log(chalk.yellow(`[${new Date().toISOString()}] ${line}`));
+        else console.log(chalk.green(`[${new Date().toISOString()}] ${line}`));
+      }, 5_000);
+
+      process.on("SIGINT", () => {
+        const { stopVolatilityMonitor } = require("./volatility");
+        stopVolatilityMonitor();
+        process.exit(0);
+      });
+      break;
+    }
+
+    // -------------------------------------------------------
     // AUTH: Gerenciamento de credenciais
     // -------------------------------------------------------
     case "auth": {
@@ -86,6 +115,34 @@ async function main() {
       const { placePostOnlyGtdOrder, calcMakerPrice } = require("./order");
       const { findBtcMarketsViaGamma } = require("./market");
       const { selectBestMarket } = require("./selector");
+
+      // ── Fase 3: Verificação de volatilidade ─────────────────
+      const { startVolatilityMonitor, waitForData, getVolatilityState, formatVolatilityState } = require("./volatility");
+
+      if (mode !== "dry") {
+        logger.info("📡 Verificando volatilidade do BTC...");
+        startVolatilityMonitor();
+        try {
+          await waitForData(20_000);
+        } catch {
+          logger.warn("Timeout aguardando dados de volatilidade — continuando sem verificação.");
+        }
+
+        const volState = getVolatilityState();
+        logger.info(`   ${formatVolatilityState(volState)}`);
+
+        if (volState.level === "STORM") {
+          logger.warn("🔴 STORM detectado — Carcará aguardando calmaria. Aposta cancelada.");
+          const { stopVolatilityMonitor } = require("./volatility");
+          stopVolatilityMonitor();
+          process.exit(0);
+        }
+
+        if (volState.level === "ALERT") {
+          logger.warn("🟡 ALERT — volatilidade elevada. Carcará opera com cautela.");
+        }
+      }
+      // ─────────────────────────────────────────────────────
 
       logger.info("Buscando e selecionando melhor mercado para apostar...");
 
