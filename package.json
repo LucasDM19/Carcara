@@ -1,12 +1,15 @@
 {
   "name": "polymarket-bot",
   "version": "1.0.0",
-  "description": "Bot de apostas automatizado na Polymarket — mercado BTC 5 minutos",
+  "description": "Bot de apostas automatizado na Polymarket \u2014 mercado BTC 5 minutos",
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/index.js --mode=select",
     "market": "node src/index.js --mode=market",
+    "select": "node src/index.js --mode=select",
+    "watch": "node src/index.js --mode=watch",
+    "dry": "node src/index.js --mode=dry",
     "order": "node src/index.js --mode=order"
   },
   "dependencies": {
