@@ -87,6 +87,23 @@ function validateOrderParams({ tokenId, price, side, sizeUsdc }) {
   if (!["BUY", "SELL"].includes(String(side).toUpperCase()))
     errors.push(`Side inválido: ${side}`);
 
+  // Verifica mínimo de shares resultante (Polymarket rejeita ordens < 2 shares)
+  // Só verifica se price e sizeUsdc são válidos para não gerar NaN
+  if (typeof price === "number" && price > 0 && price < 1 &&
+      typeof sizeUsdc === "number" && sizeUsdc > 0) {
+    const normalizedSide = String(side).toUpperCase();
+    const estimatedShares = normalizedSide === "BUY"
+      ? Math.floor((sizeUsdc / price) * 100) / 100
+      : Math.floor((sizeUsdc / (1 - price)) * 100) / 100;
+
+    if (estimatedShares < 2) {
+      errors.push(
+        `Shares estimado (${estimatedShares}) abaixo do mínimo da Polymarket (2 shares). ` +
+        `Aumente MAX_BET_SIZE_USDC ou escolha um preço mais baixo.`
+      );
+    }
+  }
+
   if (errors.length > 0)
     return { ok: false, reason: errors.join(" | ") };
 
