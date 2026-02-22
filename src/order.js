@@ -1,38 +1,52 @@
 // src/order.js
 // ============================================================
-// FASE 2 — Colocação de Apostas: Post-Only + GTD
+// FASE 2 — Ordens Post-Only GTD
 // ============================================================
-// Responsável por:
-//   - Inicializar o ClobClient autenticado
-//   - Construir ordens Post-Only GTD (nunca paga taxa de taker)
-//   - Verificar segurança ANTES de qualquer ordem
-//   - Cancelar ordens abertas
-// ============================================================
-// ⚠️  SEGURANÇA: Este módulo tem múltiplas camadas de proteção:
-//   1. Credenciais carregadas só quando necessário
-//   2. Limite de tamanho máximo por aposta (MAX_BET_SIZE_USDC)
-//   3. Verificação de slippage antes de executar
-//   4. Modo DRY-RUN disponível (não envia ordens reais)
+// Fluxo de uma ordem:
+//
+//   1. validateOrderParams  — validação local dos parâmetros
+//   2. initClient           — autenticação (só carrega credenciais aqui)
+//   3. checkPostOnlySafe    — consulta orderbook via axios (já funciona)
+//                             e garante que o preço não cruza o spread
+//   4. calcShares           — converte USDC → shares
+//   5. createOrder          — SDK assina a ordem localmente
+//   6. postOrder(GTD)       — envia para a exchange
+//
+// Post-Only na Polymarket:
+//   Não existe um flag "postOnly" explícito no SDK.
+//   A garantia é feita em duas camadas:
+//     a) checkPostOnlySafe: rejeita ANTES de enviar se o preço
+//        cruzaria o spread neste momento
+//     b) OrderType.GTD: a exchange cancela automaticamente a ordem
+//        se ela não puder ser colocada como maker no book
+//
+// GTD (Good-Til-Date):
+//   A ordem expira automaticamente no timestamp `expiresAt`.
+//   Usamos o endDate do mercado selecionado — a ordem some
+//   junto com o mercado se não for preenchida.
 // ============================================================
 
 const { ClobClient, Side, OrderType } = require("@polymarket/clob-client");
 const { ethers } = require("ethers");
+const { getOrderBook } = require("./market"); // Reutiliza o axios que já funciona
 const config = require("./config");
 const logger = require("./logger");
 
-let _client = null; // Singleton do cliente autenticado
+let _client = null;
 
-// ----------------------------------------------------------
-// Inicializa o ClobClient com autenticação completa
-// Chame apenas quando for realmente operar
-// ----------------------------------------------------------
+// ============================================================
+// Inicializa o ClobClient autenticado (singleton)
+// Credenciais só são lidas aqui — nunca antes
+// ============================================================
 async function initClient() {
   if (_client) return _client;
 
-  const creds = config.loadTradingCredentials(); // Lança erro se não configurado
+  const creds = config.loadTradingCredentials();
 
+  // Ethers v5: Wallet sem provider (só assina, não precisa de RPC)
   const wallet = new ethers.Wallet(creds.privateKey);
 
+  // ClobClient v4: (host, chainId, signer, creds, signatureType?)
   _client = new ClobClient(
     config.clobHost,
     config.chainId,
@@ -48,81 +62,113 @@ async function initClient() {
   return _client;
 }
 
-// ----------------------------------------------------------
-// Verificações de segurança antes de qualquer ordem
-// Retorna { ok: boolean, reason: string }
-// ----------------------------------------------------------
+// ============================================================
+// Validação local dos parâmetros da ordem
+// Roda ANTES de qualquer chamada de rede
+// ============================================================
 function validateOrderParams({ tokenId, price, side, sizeUsdc }) {
-  if (!tokenId) return { ok: false, reason: "tokenId ausente" };
+  const errors = [];
 
-  if (price <= 0 || price >= 1) {
-    return { ok: false, reason: `Preço inválido: ${price}. Deve estar entre 0 e 1.` };
-  }
+  if (!tokenId || typeof tokenId !== "string" || tokenId.length < 10)
+    errors.push("tokenId ausente ou inválido");
 
-  if (sizeUsdc <= 0) {
-    return { ok: false, reason: `Tamanho inválido: ${sizeUsdc}` };
-  }
+  if (typeof price !== "number" || price <= 0 || price >= 1)
+    errors.push(`Preço inválido: ${price} (deve ser > 0 e < 1)`);
 
-  if (sizeUsdc > config.maxBetSizeUsdc) {
-    return {
-      ok: false,
-      reason: `Tamanho ${sizeUsdc} USDC excede o limite de segurança de ${config.maxBetSizeUsdc} USDC`,
-    };
-  }
+  if (typeof sizeUsdc !== "number" || sizeUsdc <= 0)
+    errors.push(`Tamanho inválido: ${sizeUsdc}`);
 
-  if (!["BUY", "SELL"].includes(side.toUpperCase())) {
-    return { ok: false, reason: `Side inválido: ${side}` };
-  }
+  if (sizeUsdc > config.maxBetSizeUsdc)
+    errors.push(
+      `Tamanho ${sizeUsdc} USDC excede o limite de segurança (${config.maxBetSizeUsdc} USDC). ` +
+      `Ajuste MAX_BET_SIZE_USDC no .env para aumentar.`
+    );
+
+  if (!["BUY", "SELL"].includes(String(side).toUpperCase()))
+    errors.push(`Side inválido: ${side}`);
+
+  if (errors.length > 0)
+    return { ok: false, reason: errors.join(" | ") };
 
   return { ok: true };
 }
 
-// ----------------------------------------------------------
-// Verifica se o preço desejado não vai cruzar o spread
-// (garantia de Post-Only: não pagar taxa de taker)
-// ----------------------------------------------------------
-async function checkPostOnlySafe(client, tokenId, side, desiredPrice) {
-  const book = await client.getOrderBook(tokenId);
+// ============================================================
+// Verifica se o preço da ordem não cruza o spread atual
+//
+// BUY:  nosso preço deve ser MENOR que o melhor ask
+//       (se for igual ou maior → executaria imediatamente → taker)
+// SELL: nosso preço deve ser MAIOR que o melhor bid
+//
+// Usa o getOrderBook() do market.js (axios) que já está validado
+// ============================================================
+async function checkPostOnlySafe(tokenId, side, desiredPrice) {
+  const book = await getOrderBook(tokenId);
 
-  const bestAsk = book.asks?.[0]?.price ? parseFloat(book.asks[0].price) : null;
-  const bestBid = book.bids?.[0]?.price ? parseFloat(book.bids[0].price) : null;
+  const bestAsk = book.asks?.[0]?.price != null ? parseFloat(book.asks[0].price) : null;
+  const bestBid = book.bids?.[0]?.price != null ? parseFloat(book.bids[0].price) : null;
 
-  if (side === "BUY" && bestAsk !== null) {
-    if (desiredPrice >= bestAsk) {
-      return {
-        safe: false,
-        reason: `Preço de compra ${desiredPrice} >= melhor ask ${bestAsk}. Ordem cruzaria o spread (viraria taker).`,
-        bestBid,
-        bestAsk,
-      };
-    }
+  logger.info(`  Orderbook atual — Best Bid: ${bestBid ?? "N/A"} | Best Ask: ${bestAsk ?? "N/A"}`);
+
+  if (side === "BUY" && bestAsk !== null && desiredPrice >= bestAsk) {
+    return {
+      safe: false,
+      reason:
+        `Preço de compra ${desiredPrice} >= best ask ${bestAsk}. ` +
+        `A ordem cruzaria o spread e viraria taker. Abortando.`,
+      bestBid,
+      bestAsk,
+    };
   }
 
-  if (side === "SELL" && bestBid !== null) {
-    if (desiredPrice <= bestBid) {
-      return {
-        safe: false,
-        reason: `Preço de venda ${desiredPrice} <= melhor bid ${bestBid}. Ordem cruzaria o spread (viraria taker).`,
-        bestBid,
-        bestAsk,
-      };
-    }
+  if (side === "SELL" && bestBid !== null && desiredPrice <= bestBid) {
+    return {
+      safe: false,
+      reason:
+        `Preço de venda ${desiredPrice} <= best bid ${bestBid}. ` +
+        `A ordem cruzaria o spread e viraria taker. Abortando.`,
+      bestBid,
+      bestAsk,
+    };
   }
 
   return { safe: true, bestBid, bestAsk };
 }
 
-// ----------------------------------------------------------
-// Coloca uma ordem Post-Only + GTD
+// ============================================================
+// Converte USDC → shares com truncamento seguro
 //
-// Parâmetros:
-//   tokenId    — ID do token YES ou NO do mercado
-//   price      — Preço em USDC por share (ex: 0.55 = 55%)
-//   side       — "BUY" ou "SELL"
-//   sizeUsdc   — Valor em USDC a apostar
-//   expiresAt  — Timestamp Unix de expiração (GTD). Padrão: fim do mercado atual
-//   dryRun     — Se true, simula sem enviar ordem real
-// ----------------------------------------------------------
+// Na Polymarket, shares têm precisão de 2 casas decimais.
+// Truncamos (floor) em vez de arredondar para nunca ultrapassar
+// o sizeUsdc máximo configurado.
+//
+// Fórmula:
+//   BUY:  shares = sizeUsdc / price
+//         (pagamos `price` por share, queremos `sizeUsdc` no total)
+//   SELL: shares = sizeUsdc / (1 - price)
+//         (recebemos `1 - price` por share ao vender)
+// ============================================================
+function calcShares(sizeUsdc, price, side) {
+  const raw = side === "BUY"
+    ? sizeUsdc / price
+    : sizeUsdc / (1 - price);
+
+  // Trunca em 2 casas decimais (nunca arredonda para cima)
+  return Math.floor(raw * 100) / 100;
+}
+
+// ============================================================
+// FUNÇÃO PRINCIPAL: Coloca uma ordem Post-Only GTD
+//
+// Parâmetros aceitos:
+//   tokenId   — ID do token Up ou Down
+//   price     — Preço por share (0.01 a 0.99)
+//   side      — "BUY" ou "SELL"
+//   sizeUsdc  — Valor em USDC a arriscar (≤ MAX_BET_SIZE_USDC)
+//   expiresAt — Timestamp Unix (segundos) de expiração da ordem
+//               Padrão: endDate do mercado atual
+//   dryRun    — true = simula sem enviar (recomendado para testes)
+// ============================================================
 async function placePostOnlyGtdOrder({
   tokenId,
   price,
@@ -132,99 +178,104 @@ async function placePostOnlyGtdOrder({
   dryRun = false,
 }) {
   logger.divider();
-  logger.info("🎯 Preparando ordem Post-Only GTD...");
+  logger.info(`🎯 Preparando ordem Post-Only GTD  [dryRun: ${dryRun}]`);
+  logger.divider();
 
-  // 1. Validação de parâmetros
+  // ── CAMADA 1: Validação de parâmetros ──────────────────────
   const validation = validateOrderParams({ tokenId, price, side, sizeUsdc });
   if (!validation.ok) {
-    logger.error(`Ordem rejeitada pela validação: ${validation.reason}`);
+    logger.error(`❌ Validação falhou: ${validation.reason}`);
     return { success: false, reason: validation.reason };
   }
+  logger.success("Validação de parâmetros OK");
 
-  // 2. Inicializar cliente (carrega credenciais)
-  const client = await initClient();
+  // ── CAMADA 2: Verificação Post-Only (sem credenciais) ───────
+  const normalizedSide = side.toUpperCase();
+  const postOnlyCheck = await checkPostOnlySafe(tokenId, normalizedSide, price);
 
-  // 3. Verificar se é Post-Only seguro (não cruza spread)
-  const postOnlyCheck = await checkPostOnlySafe(client, tokenId, side, price);
   if (!postOnlyCheck.safe) {
-    logger.warn(`Post-Only check falhou: ${postOnlyCheck.reason}`);
-    logger.warn("Ordem NÃO enviada (política Post-Only ativa).");
+    logger.warn(`⚠️  Post-Only check falhou: ${postOnlyCheck.reason}`);
     return { success: false, reason: postOnlyCheck.reason, spread: postOnlyCheck };
   }
-
   logger.success(`Post-Only check OK — Best Bid: ${postOnlyCheck.bestBid} | Best Ask: ${postOnlyCheck.bestAsk}`);
 
-  // 4. Calcular shares a partir do valor em USDC
-  //    shares = sizeUsdc / price  (compra) ou sizeUsdc / (1 - price) (venda)
-  const shares = side === "BUY"
-    ? Math.floor((sizeUsdc / price) * 100) / 100
-    : Math.floor((sizeUsdc / (1 - price)) * 100) / 100;
-
-  // 5. Expiração padrão: 5 minutos a partir de agora (se não especificado)
-  const expiry = expiresAt || Math.floor(Date.now() / 1000) + 300;
-
-  const orderParams = {
-    tokenID: tokenId,
-    price: price,
-    side: side === "BUY" ? Side.BUY : Side.SELL,
-    size: shares,
-    expiration: expiry,   // Campo GTD
-    feeRateBps: "0",      // Post-Only: taxa de maker (0 bps na Polymarket)
-  };
-
-  logger.info("Parâmetros da ordem:", {
-    tokenId,
-    side,
-    price,
-    shares,
-    sizeUsdc,
-    expiresAt: new Date(expiry * 1000).toISOString(),
-    dryRun,
-  });
-
-  // 6. DRY-RUN: retorna simulação sem enviar
-  if (dryRun) {
-    logger.warn("🧪 DRY-RUN ativo — ordem NÃO enviada. Simulação concluída.");
-    return { success: true, dryRun: true, params: orderParams };
+  // ── CAMADA 3: Cálculo de shares ────────────────────────────
+  const shares = calcShares(sizeUsdc, price, normalizedSide);
+  if (shares <= 0) {
+    const reason = `Shares calculado é zero ou negativo (${shares}). Verifique price e sizeUsdc.`;
+    logger.error(reason);
+    return { success: false, reason };
   }
 
-  // 7. Criar e enviar a ordem
-  const order = await client.createOrder(orderParams);
+  // Expiração: endDate do mercado, ou +5min como fallback
+  const expiry = expiresAt ?? Math.floor(Date.now() / 1000) + 300;
 
-  // POST_ONLY = ordem cancela automaticamente se cruzar o spread no momento do envio
-  // GTD       = cancela automaticamente ao atingir o tempo de expiração
+  logger.info("📋 Resumo da ordem:");
+  logger.info(`   Token    : ${tokenId.slice(0, 20)}...`);
+  logger.info(`   Side     : ${normalizedSide}`);
+  logger.info(`   Preço    : ${price} (${(price * 100).toFixed(2)}%)`);
+  logger.info(`   Shares   : ${shares}`);
+  logger.info(`   Total    : ~${(shares * price).toFixed(2)} USDC`);
+  logger.info(`   Expira   : ${new Date(expiry * 1000).toISOString()}`);
+
+  // ── DRY-RUN: Para aqui sem tocar em credenciais ─────────────
+  if (dryRun) {
+    logger.warn("🧪 DRY-RUN: ordem NÃO enviada. Todas as verificações passaram.");
+    return {
+      success: true,
+      dryRun: true,
+      simulatedOrder: { tokenId, side: normalizedSide, price, shares, expiry },
+    };
+  }
+
+  // ── CAMADA 4: Autenticação e envio ──────────────────────────
+  logger.info("🔐 Inicializando cliente autenticado...");
+  const client = await initClient();
+
+  logger.info("✍️  Assinando ordem localmente...");
+  const order = await client.createOrder({
+    tokenID: tokenId,
+    price,
+    side: normalizedSide === "BUY" ? Side.BUY : Side.SELL,
+    size: shares,
+    expiration: expiry,
+  });
+
+  logger.info("📡 Enviando para a exchange (GTD)...");
   const response = await client.postOrder(order, OrderType.GTD);
 
-  if (response.success) {
+  if (response?.success || response?.orderID) {
     logger.success("✅ Ordem enviada com sucesso!", {
       orderId: response.orderID,
       status: response.status,
+      errorMsg: response.errorMsg || null,
     });
     return { success: true, orderId: response.orderID, response };
   } else {
-    logger.error("Ordem rejeitada pela exchange", response);
+    logger.error("❌ Exchange rejeitou a ordem:", response);
     return { success: false, response };
   }
 }
 
-// ----------------------------------------------------------
-// Cancela uma ordem pelo ID
-// ----------------------------------------------------------
+// ============================================================
+// Cancela uma ordem aberta pelo ID
+// ============================================================
 async function cancelOrder(orderId) {
   const client = await initClient();
-  logger.info(`Cancelando ordem: ${orderId}`);
+  logger.info(`🗑  Cancelando ordem: ${orderId}`);
   const result = await client.cancelOrder({ orderID: orderId });
   logger.success("Ordem cancelada.", result);
   return result;
 }
 
-// ----------------------------------------------------------
-// Lista ordens abertas
-// ----------------------------------------------------------
+// ============================================================
+// Lista ordens abertas (todas, ou filtradas por market)
+// ============================================================
 async function getOpenOrders(marketId) {
   const client = await initClient();
-  const orders = await client.getOpenOrders({ market: marketId });
-  logger.info(`Ordens abertas: ${orders.length}`);
+  const params = marketId ? { market: marketId } : {};
+  const orders = await client.getOpenOrders(params);
+  logger.info(`Ordens abertas: ${orders?.length ?? 0}`);
   return orders;
 }
 
