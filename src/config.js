@@ -29,6 +29,10 @@ const config = {
   // Mercado alvo
   btcConditionId: optionalEnv("BTC_MARKET_CONDITION_ID", ""),
 
+  // Proxy wallet da Polymarket (mostrado no perfil do site)
+  // Diferente da EOA que assina — é onde o saldo realmente fica
+  proxyWallet: optionalEnv("PROXY_WALLET", ""),
+
   // Limites de segurança
   maxBetSizeUsdc: parseFloat(optionalEnv("MAX_BET_SIZE_USDC", "5")),
   maxSlippage: parseFloat(optionalEnv("MAX_SLIPPAGE", "0.01")),

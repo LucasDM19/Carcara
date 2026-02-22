@@ -10,7 +10,11 @@
     "select": "node src/index.js --mode=select",
     "watch": "node src/index.js --mode=watch",
     "dry": "node src/index.js --mode=dry",
-    "order": "node src/index.js --mode=order"
+    "order": "node src/index.js --mode=order",
+    "auth": "node src/index.js --mode=auth --action=check",
+    "auth:derive": "node src/index.js --mode=auth --action=derive",
+    "auth:create": "node src/index.js --mode=auth --action=create",
+    "auth:approve": "node src/index.js --mode=auth --action=approve"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",

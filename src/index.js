@@ -68,6 +68,17 @@ async function main() {
     }
 
     // -------------------------------------------------------
+    // AUTH: Gerenciamento de credenciais
+    // -------------------------------------------------------
+    case "auth": {
+      const { runAuth } = require("./auth");
+      const actionArg = args.find((a) => a.startsWith("--action="));
+      const action = actionArg ? actionArg.split("=")[1] : "check";
+      await runAuth(action);
+      break;
+    }
+
+    // -------------------------------------------------------
     // ORDER / DRY: Aposta Post-Only GTD (Fase 2)
     // -------------------------------------------------------
     case "order":

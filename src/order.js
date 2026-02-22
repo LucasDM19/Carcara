@@ -46,7 +46,17 @@ async function initClient() {
   // Ethers v5: Wallet sem provider (só assina, não precisa de RPC)
   const wallet = new ethers.Wallet(creds.privateKey);
 
-  // ClobClient v4: (host, chainId, signer, creds, signatureType?)
+  // ClobClient v4: (host, chainId, signer, creds, signatureType, funder)
+  //
+  // Polymarket com Magic.Link usa proxy wallet:
+  //   - signer  = EOA (0x9BDb8...) — assina as ordens
+  //   - funder  = proxy wallet (0x544eB...) — onde o saldo fica
+  //
+  // signatureType 0 = EOA puro (sem proxy)
+  // signatureType 1 = POLY_PROXY (EOA assina em nome do proxy)
+  const signatureType = config.proxyWallet ? 1 : 0;
+  const funder = config.proxyWallet || undefined;
+
   _client = new ClobClient(
     config.clobHost,
     config.chainId,
@@ -55,8 +65,14 @@ async function initClient() {
       key: creds.apiKey,
       secret: creds.apiSecret,
       passphrase: creds.apiPassphrase,
-    }
+    },
+    signatureType,
+    funder
   );
+
+  if (funder) {
+    logger.info(`   Modo proxy wallet — funder: ${funder}`);
+  }
 
   logger.success(`Cliente CLOB autenticado — carteira: ${wallet.address}`);
   return _client;
