@@ -186,11 +186,10 @@ function connect() {
   });
 
   ws.on("close", () => {
+    if (!isRunning) return; // parada intencional — não reconecta
     logger.warn("🔌 Carcará Volatilidade — WebSocket desconectado. Reconectando...");
     currentState = { ...currentState, level: "DISCONNECTED", reason: "WebSocket desconectado" };
-    if (isRunning) {
-      setTimeout(connect, CONFIG.RECONNECT_DELAY_MS);
-    }
+    setTimeout(connect, CONFIG.RECONNECT_DELAY_MS);
   });
 
   ws.on("error", (err) => {
@@ -214,8 +213,8 @@ function startVolatilityMonitor() {
 // Para o monitor
 function stopVolatilityMonitor() {
   isRunning = false;
-  if (staleTimer) clearTimeout(staleTimer);
-  if (ws) ws.close();
+  if (staleTimer) { clearTimeout(staleTimer); staleTimer = null; }
+  if (ws) { ws.removeAllListeners(); ws.close(); ws = null; }
   logger.info("⏹  Monitor de volatilidade parado.");
 }
 
