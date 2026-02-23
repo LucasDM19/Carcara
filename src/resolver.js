@@ -33,8 +33,8 @@ function getPendingRounds() {
            outcome, shares_matched, usdc_submitted, order_status
     FROM rounds
     WHERE resolved = 0
-      AND order_status IN ('MATCHED', 'CAPTURE')
-      AND market_end_date < datetime('now')
+      AND order_status = 'MATCHED'
+      AND datetime(market_end_date) < datetime('now')
     ORDER BY market_end_date ASC
   `).all();
 }
@@ -45,36 +45,60 @@ function getPendingRounds() {
 // ============================================================
 async function fetchMarketOutcome(conditionId) {
   try {
-    const url = `${GAMMA_HOST}/markets?condition_ids=${conditionId}`;
-    const res = await axios.get(url, { timeout: 10_000 });
-    const markets = res.data;
+    // Tenta os dois formatos de query que a Gamma aceita
+    let markets = null;
+    for (const param of [`condition_ids=${conditionId}`, `conditionId=${conditionId}`]) {
+      const res = await axios.get(`${GAMMA_HOST}/markets?${param}`, { timeout: 10_000 });
+      if (Array.isArray(res.data) && res.data.length > 0) {
+        markets = res.data;
+        break;
+      }
+    }
 
-    if (!Array.isArray(markets) || markets.length === 0) return null;
+    if (!markets) {
+      logger.warn(`  Resolver: nenhum mercado retornado para ${conditionId.slice(0, 12)}...`);
+      return null;
+    }
 
     const market = markets[0];
 
-    // Mercado ainda aberto ou sem resolução
-    if (!market.closed && !market.resolved) return null;
+    // Debug: mostra estado do mercado
+    logger.info(`  API: active=${market.active} closed=${market.closed} resolved=${market.resolved}`);
 
-    // A Gamma retorna os outcomes e os preços finais (0 ou 1)
-    // O vencedor tem outcomePrices próximo de "1"
+    // A Gamma pode usar active=false, closed=true, ou resolved=true para indicar encerramento
+    const isSettled = market.active === false || market.closed === true || market.resolved === true;
+    if (!isSettled) {
+      logger.info(`  ⏳ Mercado ainda ativo — ainda não resolvido.`);
+      return null;
+    }
+
+    // Extrai outcomes e preços finais
     let outcomes, prices;
     try {
       outcomes = typeof market.outcomes === "string"
         ? JSON.parse(market.outcomes)
-        : market.outcomes;
+        : (market.outcomes || []);
       prices = typeof market.outcomePrices === "string"
         ? JSON.parse(market.outcomePrices)
-        : market.outcomePrices;
+        : (market.outcomePrices || []);
     } catch {
+      logger.warn(`  Resolver: erro ao parsear outcomes/prices`);
       return null;
     }
 
-    if (!outcomes || !prices || outcomes.length !== prices.length) return null;
+    logger.info(`  Outcomes: ${JSON.stringify(outcomes)} | Prices: ${JSON.stringify(prices)}`);
 
-    // Encontra o outcome com preço final = 1 (vencedor)
+    if (!outcomes.length || outcomes.length !== prices.length) {
+      logger.warn(`  Resolver: outcomes/prices inconsistentes`);
+      return null;
+    }
+
+    // O vencedor tem preço final próximo de 1.0
     const winnerIdx = prices.findIndex(p => parseFloat(p) >= 0.99);
-    if (winnerIdx === -1) return null;
+    if (winnerIdx === -1) {
+      logger.warn(`  Resolver: nenhum vencedor claro ainda (prices: ${prices})`);
+      return null;
+    }
 
     return outcomes[winnerIdx]; // "Up" ou "Down"
   } catch (err) {
