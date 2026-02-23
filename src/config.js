@@ -1,4 +1,4 @@
-// src/config.js
+// src/config.js — CARCARÁ
 // Carrega e valida todas as variáveis de ambiente.
 // Qualquer variável ausente que seja crítica lança um erro ANTES de qualquer ação financeira.
 
@@ -32,6 +32,10 @@ const config = {
   // Proxy wallet da Polymarket (mostrado no perfil do site)
   // Diferente da EOA que assina — é onde o saldo realmente fica
   proxyWallet: optionalEnv("PROXY_WALLET", ""),
+
+  // Parâmetros de execução de ordens
+  orderWaitMs: parseInt(optionalEnv("ORDER_WAIT_MS", "15000")),  // tempo de espera antes de cancelar
+  orderMargin: parseFloat(optionalEnv("ORDER_MARGIN", "0.005")), // margem abaixo do midpoint
 
   // Limites de segurança
   maxBetSizeUsdc: parseFloat(optionalEnv("MAX_BET_SIZE_USDC", "5")),

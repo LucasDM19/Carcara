@@ -1,0 +1,150 @@
+// src/stats.js — CARCARÁ
+// ============================================================
+// FASE 4 — Dashboard de métricas no terminal
+// ============================================================
+
+const chalk = require("chalk");
+const { getStats, getDb } = require("./db");
+const logger = require("./logger");
+
+// ============================================================
+// Formata número com sinal explícito (+/-)
+// ============================================================
+function signed(n, decimals = 2) {
+  if (n == null) return chalk.gray("—");
+  const formatted = Math.abs(n).toFixed(decimals);
+  return n >= 0 ? chalk.green(`+${formatted}`) : chalk.red(`-${formatted}`);
+}
+
+function pct(num, den) {
+  if (!den || den === 0) return chalk.gray("—");
+  return `${((num / den) * 100).toFixed(1)}%`;
+}
+
+// ============================================================
+// Imprime o dashboard completo no terminal
+// ============================================================
+function printDashboard({ mode = null, strategy = null } = {}) {
+  const { summary, recent } = getStats({ mode, strategy });
+  const s = summary;
+
+  logger.divider();
+  console.log(chalk.bold.yellow("  🦅 CARCARÁ — Dashboard de Métricas"));
+  if (mode) console.log(chalk.gray(`  Filtro: modo=${mode}${strategy ? ` estratégia=${strategy}` : ""}`));
+  logger.divider();
+
+  // ── Resumo geral ────────────────────────────────────────
+  console.log(chalk.bold("\n  APOSTAS"));
+  console.log(`  Total de rounds  : ${chalk.cyan(s.total_rounds)}`);
+  console.log(`  Preenchidas      : ${chalk.green(s.filled)}  (${pct(s.filled, s.total_rounds)})`);
+  console.log(`  Canceladas       : ${chalk.gray(s.cancelled)}  (${pct(s.cancelled, s.total_rounds)})`);
+  console.log(`  Taker fills      : ${s.taker_fills > 0 ? chalk.red(s.taker_fills) : chalk.green("0")}  ← deve ser sempre 0`);
+  console.log(`  Erros            : ${s.errors > 0 ? chalk.red(s.errors) : chalk.green("0")}`);
+
+  // ── Resultados ───────────────────────────────────────────
+  console.log(chalk.bold("\n  RESULTADOS  (apostas resolvidas)"));
+  if (s.resolved === 0) {
+    console.log(chalk.gray("  Nenhuma aposta resolvida ainda."));
+    console.log(chalk.gray("  Execute: npm run resolve -- --id=<round_id> --won=true --payout=<valor>"));
+  } else {
+    const winRate = s.wins / s.resolved;
+    const winColor = winRate >= 0.55 ? chalk.green : winRate >= 0.45 ? chalk.yellow : chalk.red;
+    console.log(`  Resolvidas       : ${chalk.cyan(s.resolved)}`);
+    console.log(`  Vitórias         : ${chalk.green(s.wins)}  (${winColor(pct(s.wins, s.resolved))})`);
+    console.log(`  Derrotas         : ${chalk.red(s.losses)}`);
+    console.log(`  Total apostado   : ${chalk.cyan((s.total_wagered || 0).toFixed(2))} USDC`);
+    console.log(`  Lucro total      : ${signed(s.total_profit)}  USDC`);
+    const roi = s.total_wagered ? (s.total_profit / s.total_wagered) * 100 : 0;
+    console.log(`  ROI              : ${signed(roi, 1)}%`);
+  }
+
+  // ── Últimas apostas ──────────────────────────────────────
+  console.log(chalk.bold("\n  ÚLTIMAS 10 APOSTAS"));
+  console.log(chalk.gray("  " + "─".repeat(90)));
+
+  const header = [
+    "ID".padEnd(4),
+    "Data".padEnd(20),
+    "Mercado".padEnd(35),
+    "Preço".padEnd(6),
+    "Fill".padEnd(8),
+    "Vol".padEnd(8),
+    "Resultado",
+  ].join("  ");
+  console.log(chalk.gray("  " + header));
+  console.log(chalk.gray("  " + "─".repeat(90)));
+
+  (recent || []).slice(0, 10).forEach((r) => {
+    const date = r.created_at?.slice(0, 19).replace("T", " ") ?? "—";
+    const name = (r.market_name || "").slice(0, 33).padEnd(35);
+    const price = (r.price_submitted?.toFixed(2) ?? "—").padEnd(6);
+
+    let fillStr;
+    if (r.order_status === "MATCHED") fillStr = chalk.green("PREENCH".padEnd(8));
+    else if (r.order_status === "CANCELED") fillStr = chalk.gray("CANCEL".padEnd(8));
+    else if (r.order_status === "DRY") fillStr = chalk.blue("DRY".padEnd(8));
+    else fillStr = chalk.red((r.order_status || "?").padEnd(8));
+
+    const volColors = { CALM: chalk.green, ALERT: chalk.yellow, STORM: chalk.red };
+    const volStr = (volColors[r.vol_level] || chalk.gray)((r.vol_level || "?").padEnd(8));
+
+    let resultStr;
+    if (!r.resolved) resultStr = chalk.gray("pendente");
+    else if (r.won) resultStr = chalk.green(`✅ +${(r.profit || 0).toFixed(2)} USDC`);
+    else resultStr = chalk.red(`❌ ${(r.profit || 0).toFixed(2)} USDC`);
+
+    console.log(`  ${String(r.id).padEnd(4)}  ${date}  ${name}  ${price}  ${fillStr}  ${volStr}  ${resultStr}`);
+  });
+
+  console.log(chalk.gray("  " + "─".repeat(90)));
+  logger.divider();
+}
+
+// ============================================================
+// Imprime stats de backtesting por faixa de midpoint
+// ============================================================
+function printBacktestSummary() {
+  const db = getDb();
+
+  logger.divider();
+  console.log(chalk.bold.yellow("  🦅 CARCARÁ — Análise por Faixa de Midpoint"));
+  logger.divider();
+
+  const ranges = [
+    { label: "45–47%", min: 0.45, max: 0.47 },
+    { label: "47–49%", min: 0.47, max: 0.49 },
+    { label: "49–51%", min: 0.49, max: 0.51 },
+    { label: "51–53%", min: 0.51, max: 0.53 },
+    { label: "53–55%", min: 0.53, max: 0.55 },
+  ];
+
+  console.log(chalk.gray("  Faixa     Rounds  Preench  TaxaFill  Wins  WinRate  Lucro"));
+  console.log(chalk.gray("  " + "─".repeat(65)));
+
+  ranges.forEach(({ label, min, max }) => {
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN order_status='MATCHED' THEN 1 ELSE 0 END) as filled,
+        SUM(CASE WHEN resolved=1 AND won=1 THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN resolved=1 THEN 1 ELSE 0 END) as resolved,
+        SUM(CASE WHEN resolved=1 THEN profit ELSE 0 END) as profit
+      FROM rounds
+      WHERE mid_up >= ? AND mid_up < ? AND mode != 'dry'
+    `).get(min, max);
+
+    const fillRate = row.total ? pct(row.filled, row.total) : "—";
+    const winRate = row.resolved ? pct(row.wins, row.resolved) : "—";
+    const profit = row.profit != null ? signed(row.profit) : chalk.gray("—");
+
+    console.log(
+      `  ${label.padEnd(9)} ${String(row.total).padEnd(7)} ${String(row.filled).padEnd(8)} ` +
+      `${fillRate.padEnd(9)} ${String(row.wins).padEnd(5)} ${winRate.padEnd(8)} ${profit}`
+    );
+  });
+
+  console.log(chalk.gray("  " + "─".repeat(65)));
+  logger.divider();
+}
+
+module.exports = { printDashboard, printBacktestSummary };

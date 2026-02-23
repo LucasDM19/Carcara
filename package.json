@@ -15,7 +15,11 @@
     "auth:derive": "node src/index.js --mode=auth --action=derive",
     "auth:create": "node src/index.js --mode=auth --action=create",
     "auth:approve": "node src/index.js --mode=auth --action=approve",
-    "volatility": "node src/index.js --mode=volatility"
+    "volatility": "node src/index.js --mode=volatility",
+    "capture": "node src/index.js --mode=capture",
+    "stats": "node src/index.js --mode=stats",
+    "stats:backtest": "node src/index.js --mode=stats --backtest",
+    "resolve": "node src/index.js --mode=resolve"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",
@@ -23,6 +27,7 @@
     "dotenv": "^16.3.1",
     "axios": "^1.6.0",
     "chalk": "^4.1.2",
-    "ws": "^8.16.0"
+    "ws": "^8.16.0",
+    "better-sqlite3": "^9.4.3"
   }
 }
