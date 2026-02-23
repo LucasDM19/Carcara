@@ -13,14 +13,22 @@
 //   --mode=capture     → Fase 4: Captura dados de mercado sem apostar
 //   --mode=stats       → Fase 4: Dashboard de métricas no terminal
 //   --mode=stats --backtest → Fase 4: Análise por faixa de midpoint
-//   --mode=resolve     → Fase 4: Registra resultado de um round
-//   --mode=auth        → Utilitário: gerencia credenciais da API
+//   --mode=resolve           → Fase 4: Auto-resolve rounds via Gamma API
+//   --mode=resolve:manual    → Fase 4: Resolve manualmente (fallback)
+//   --mode=auth              → Utilitário: gerencia credenciais da API
+//
+// Estratégias (--strategy=<nome>):
+//   dummy     → cara ou coroa — baseline de comparação
+//   up-only   → sempre aposta Up (padrão)
+//   down-only → sempre aposta Down
 //
 // Exemplos:
-//   npm run order                         → aposta real
-//   npm run capture                       → coleta dados sem apostar
-//   npm run stats                         → dashboard de métricas
-//   npm run resolve -- --id=3 --won=true --payout=5.94
+//   npm run order                              → aposta Up (padrão)
+//   npm run order -- --strategy=dummy          → aposta aleatório
+//   npm run capture                            → coleta dados sem apostar
+//   npm run stats                              → dashboard de métricas
+//   npm run resolve                            → auto-resolve todos os pendentes
+//   npm run resolve -- --watch=60              → resolve em loop a cada 60s
 // ============================================================
 
 const logger = require("./logger");
@@ -169,13 +177,19 @@ async function main() {
         process.exit(0);
       }
 
-      // Captura orderbook antes de decidir o preço
-      const book = await _getBook(best.upToken.token_id);
+      // ── Estratégia: decide Up ou Down ────────────────────
+      const { runStrategy } = require("./strategy");
+      const strategyName = args.find(a => a.startsWith("--strategy="))?.split("=")[1] ?? "up-only";
+      const decision = runStrategy(strategyName, best);
+      // ─────────────────────────────────────────────────────
 
-      const bidPrice = await _calcPrice(best.upToken.token_id, "BUY", best.midUp, config.orderMargin);
+      // Captura orderbook antes de decidir o preço
+      const book = await _getBook(decision.tokenId);
+
+      const bidPrice = await _calcPrice(decision.tokenId, "BUY", decision.outcome === "Up" ? best.midUp : best.midDown, config.orderMargin);
 
       const result = await _place({
-        tokenId: best.upToken.token_id,
+        tokenId: decision.tokenId,
         price: bidPrice,
         side: "BUY",
         sizeUsdc: config.maxBetSizeUsdc,
@@ -188,7 +202,6 @@ async function main() {
       const volState = getVolatilityState();
       const roundId = insertRound({
         mode,
-        strategy: null,
         condition_id: best.market.condition_id || best.market.id,
         market_name: best.market.question || best.market.title,
         market_end_date: best.market.end_date,
@@ -198,8 +211,9 @@ async function main() {
         mid_down: best.midDown,
         spread: best.spread,
         side: "BUY",
-        token_id: best.upToken.token_id,
-        outcome: "Up",
+        token_id: decision.tokenId,
+        outcome: decision.outcome,
+        strategy: strategyName,
         price_submitted: bidPrice,
         shares_submitted: result.totalSize ?? result.simulatedOrder?.shares ?? 0,
         usdc_submitted: config.maxBetSizeUsdc,
@@ -294,25 +308,43 @@ async function main() {
     // STATS: Dashboard de métricas
     // -------------------------------------------------------
     case "stats": {
-      const { printDashboard, printBacktestSummary } = require("./stats");
+      const { printDashboard, printBacktestSummary, printStrategyBreakdown } = require("./stats");
       const modeFilter = args.find(a => a.startsWith("--filter="))?.split("=")[1] ?? null;
       const backtest = args.includes("--backtest");
+      const strategies = args.includes("--strategies");
       printDashboard({ mode: modeFilter });
       if (backtest) printBacktestSummary();
+      if (strategies) printStrategyBreakdown();
       break;
     }
 
     // -------------------------------------------------------
-    // RESOLVE: Registra resultado de um round
+    // RESOLVE: Auto-resolução via Gamma API
     // -------------------------------------------------------
     case "resolve": {
+      const { autoResolve, watchAndResolve } = require("./resolver");
+      const watchArg = args.find(a => a.startsWith("--watch="))?.split("=")[1];
+
+      if (watchArg) {
+        await watchAndResolve(parseInt(watchArg));
+      } else {
+        await autoResolve();
+      }
+      break;
+    }
+
+    // -------------------------------------------------------
+    // RESOLVE:MANUAL — Registra resultado manualmente
+    // Fallback para quando a Gamma API não resolver automaticamente
+    // -------------------------------------------------------
+    case "resolve:manual": {
       const { resolveRound } = require("./db");
       const idArg = args.find(a => a.startsWith("--id="))?.split("=")[1];
       const wonArg = args.find(a => a.startsWith("--won="))?.split("=")[1];
       const payoutArg = args.find(a => a.startsWith("--payout="))?.split("=")[1];
 
       if (!idArg || wonArg == null) {
-        logger.error("Uso: npm run resolve -- --id=<N> --won=true --payout=<valor>");
+        logger.error("Uso: npm run resolve:manual -- --id=<N> --won=true --payout=<valor>");
         process.exit(1);
       }
 
@@ -320,7 +352,7 @@ async function main() {
         won: wonArg === "true" || wonArg === "1",
         payout: parseFloat(payoutArg ?? "0"),
       });
-      logger.success(`Round #${idArg} resolvido. won=${wonArg} payout=${payoutArg}`);
+      logger.success(`Round #${idArg} resolvido manualmente. won=${wonArg} payout=${payoutArg}`);
       break;
     }
   }

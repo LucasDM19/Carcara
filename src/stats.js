@@ -147,4 +147,54 @@ function printBacktestSummary() {
   logger.divider();
 }
 
-module.exports = { printDashboard, printBacktestSummary };
+// ============================================================
+// Breakdown por estratégia
+// ============================================================
+function printStrategyBreakdown() {
+  const db = getDb();
+
+  const strategies = db.prepare(`
+    SELECT DISTINCT COALESCE(strategy, 'up-only') as strategy FROM rounds
+    WHERE mode = 'order' ORDER BY strategy
+  `).all().map(r => r.strategy);
+
+  if (strategies.length === 0) {
+    logger.info("Nenhuma aposta real registrada ainda.");
+    return;
+  }
+
+  logger.divider();
+  console.log(chalk.bold.yellow("  🦅 CARCARÁ — Comparação de Estratégias"));
+  logger.divider();
+  console.log(chalk.gray("  Estratégia    Rounds  Preench  WinRate  Lucro     ROI"));
+  console.log(chalk.gray("  " + "─".repeat(58)));
+
+  for (const strat of strategies) {
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN order_status='MATCHED' THEN 1 ELSE 0 END) as filled,
+        SUM(CASE WHEN resolved=1 AND won=1 THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN resolved=1 THEN 1 ELSE 0 END) as resolved,
+        SUM(CASE WHEN resolved=1 THEN profit ELSE 0 END) as profit,
+        SUM(usdc_submitted) as wagered
+      FROM rounds
+      WHERE mode = 'order' AND COALESCE(strategy, 'up-only') = ?
+    `).get(strat);
+
+    const winRate = row.resolved ? pct(row.wins, row.resolved) : chalk.gray("—");
+    const profit = row.profit != null ? signed(row.profit) : chalk.gray("—");
+    const roi = row.wagered && row.profit != null
+      ? signed((row.profit / row.wagered) * 100, 1) + "%"
+      : chalk.gray("—");
+
+    console.log(
+      `  ${strat.padEnd(14)} ${String(row.total).padEnd(7)} ${String(row.filled).padEnd(8)} ` +
+      `${String(winRate).padEnd(8)} ${String(profit).padEnd(9)} ${roi}`
+    );
+  }
+  console.log(chalk.gray("  " + "─".repeat(58)));
+  logger.divider();
+}
+
+module.exports = { printDashboard, printBacktestSummary, printStrategyBreakdown };

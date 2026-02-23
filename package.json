@@ -19,7 +19,13 @@
     "capture": "node src/index.js --mode=capture",
     "stats": "node src/index.js --mode=stats",
     "stats:backtest": "node src/index.js --mode=stats --backtest",
-    "resolve": "node src/index.js --mode=resolve"
+    "resolve": "node src/index.js --mode=resolve",
+    "resolve:watch": "node src/index.js --mode=resolve --watch=60",
+    "resolve:manual": "node src/index.js --mode=resolve:manual",
+    "order:dummy": "node src/index.js --mode=order --strategy=dummy",
+    "order:up": "node src/index.js --mode=order --strategy=up-only",
+    "order:down": "node src/index.js --mode=order --strategy=down-only",
+    "stats:strategies": "node src/index.js --mode=stats --strategies"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",
