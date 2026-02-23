@@ -120,9 +120,17 @@ async function main() {
     // -------------------------------------------------------
     case "order":
     case "dry": {
-          // ── Fase 3: Verificação de volatilidade ─────────────────
-      const { startVolatilityMonitor, waitForData, getVolatilityState, formatVolatilityState } = require("./volatility");
+      // ── Imports do bloco order/dry ────────────────────────
+      const { placePostOnlyGtdOrder: _place, calcMakerPrice: _calcPrice } = require("./order");
+      const { findBtcMarketsViaGamma: _findMarkets, getOrderBook: _getBook } = require("./market");
+      const { selectBestMarket: _selectBest } = require("./selector");
+      const { insertRound, insertOrderbookSnapshot } = require("./db");
+      const {
+        startVolatilityMonitor, waitForData, stopVolatilityMonitor,
+        getVolatilityState, formatVolatilityState,
+      } = require("./volatility");
 
+      // ── Fase 3: Verificação de volatilidade ──────────────
       if (mode !== "dry") {
         logger.info("📡 Verificando volatilidade do BTC...");
         startVolatilityMonitor();
@@ -132,29 +140,22 @@ async function main() {
           logger.warn("Timeout aguardando dados de volatilidade — continuando sem verificação.");
         }
 
-        const volState = getVolatilityState();
-        logger.info(`   ${formatVolatilityState(volState)}`);
+        const volCheck = getVolatilityState();
+        logger.info(`   ${formatVolatilityState(volCheck)}`);
 
-        if (volState.level === "STORM") {
+        if (volCheck.level === "STORM") {
           logger.warn("🔴 STORM detectado — Carcará aguardando calmaria. Aposta cancelada.");
-          const { stopVolatilityMonitor } = require("./volatility");
           stopVolatilityMonitor();
           process.exit(0);
         }
 
-        if (volState.level === "ALERT") {
+        if (volCheck.level === "ALERT") {
           logger.warn("🟡 ALERT — volatilidade elevada. Carcará opera com cautela.");
         }
       }
       // ─────────────────────────────────────────────────────
 
       logger.info("Buscando e selecionando melhor mercado para apostar...");
-
-      const { placePostOnlyGtdOrder: _place, calcMakerPrice: _calcPrice } = require("./order");
-      const { findBtcMarketsViaGamma: _findMarkets, getOrderBook: _getBook } = require("./market");
-      const { selectBestMarket: _selectBest } = require("./selector");
-      const { insertRound, insertOrderbookSnapshot } = require("./db");
-      const { getVolatilityState } = require("./volatility");
 
       const rawMarkets = await _findMarkets();
       if (rawMarkets.length === 0) {
