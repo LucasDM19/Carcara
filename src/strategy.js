@@ -63,12 +63,95 @@ function strategyDownOnly(market) {
 }
 
 // ============================================================
+// MOMENTUM — aposta na direção que o mercado já sinalizou
+// ============================================================
+// Lógica: se o midpoint está acima de 50%, o mercado coletivo
+// já está apostando Up — acompanha essa tendência.
+// Se está abaixo de 50%, acompanha Down.
+//
+// Não aposta em mercados muito equilibrados (zona neutra),
+// onde o sinal é fraco e os dados mostram resultado negativo.
+//
+// Parâmetros:
+//   NEUTRAL_ZONE: faixa ao redor de 50% considerada sem sinal
+//   Ex: 0.015 → ignora mercados entre 48.5% e 51.5%
+// ============================================================
+function strategyMomentum(market, options = {}) {
+  const neutralZone = options.neutralZone ?? 0.015; // ±1.5% ao redor de 50%
+  const { midUp, midDown, upToken, downToken } = market;
+
+  const lowerBound = 0.5 - neutralZone; // ex: 0.485
+  const upperBound = 0.5 + neutralZone; // ex: 0.515
+
+  // Zona neutra — sinal fraco, não apostar
+  if (midUp >= lowerBound && midUp <= upperBound) {
+    return null; // sinaliza para o caller não apostar
+  }
+
+  // Mercado favorece Up — acompanha
+  if (midUp > upperBound) {
+    return {
+      side: "BUY",
+      outcome: "Up",
+      tokenId: upToken?.token_id,
+      rationale: `Momentum Up: midUp=${(midUp * 100).toFixed(1)}% > ${(upperBound * 100).toFixed(1)}%`,
+    };
+  }
+
+  // Mercado favorece Down — acompanha
+  return {
+    side: "BUY",
+    outcome: "Down",
+    tokenId: downToken?.token_id,
+    rationale: `Momentum Down: midUp=${(midUp * 100).toFixed(1)}% < ${(lowerBound * 100).toFixed(1)}%`,
+  };
+}
+
+// ============================================================
+// CONTRARIAN — aposta contra a tendência do mercado
+// ============================================================
+// Hipótese alternativa: mercados levemente deslocados tendem
+// a reverter para 50%. Útil para comparar com momentum.
+// ============================================================
+function strategyContrarian(market, options = {}) {
+  const neutralZone = options.neutralZone ?? 0.015;
+  const { midUp, midDown, upToken, downToken } = market;
+
+  const lowerBound = 0.5 - neutralZone;
+  const upperBound = 0.5 + neutralZone;
+
+  if (midUp >= lowerBound && midUp <= upperBound) {
+    return null; // zona neutra — sem sinal
+  }
+
+  // Mercado favorece Up — aposta contra (Down)
+  if (midUp > upperBound) {
+    return {
+      side: "BUY",
+      outcome: "Down",
+      tokenId: downToken?.token_id,
+      rationale: `Contrarian Down: midUp=${(midUp * 100).toFixed(1)}% > ${(upperBound * 100).toFixed(1)}%`,
+    };
+  }
+
+  // Mercado favorece Down — aposta contra (Up)
+  return {
+    side: "BUY",
+    outcome: "Up",
+    tokenId: upToken?.token_id,
+    rationale: `Contrarian Up: midUp=${(midUp * 100).toFixed(1)}% < ${(lowerBound * 100).toFixed(1)}%`,
+  };
+}
+
+// ============================================================
 // Registry de estratégias disponíveis
 // ============================================================
 const STRATEGIES = {
-  "dummy":     strategyDummy,
-  "up-only":   strategyUpOnly,
-  "down-only": strategyDownOnly,
+  "dummy":      strategyDummy,
+  "up-only":    strategyUpOnly,
+  "down-only":  strategyDownOnly,
+  "momentum":   strategyMomentum,
+  "contrarian": strategyContrarian,
 };
 
 // ============================================================

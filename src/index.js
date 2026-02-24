@@ -150,6 +150,14 @@ async function main() {
           }
 
           const decision = runStrategy(strategyName, best);
+
+          // Estratégia pode recusar apostar (ex: momentum em zona neutra)
+          if (!decision) {
+            logger.info(`   ⏭  Estratégia [${strategyName}] recusou apostar nesta janela — zona neutra.`);
+            lastConditionId = condId; // marca para não tentar de novo no mesmo mercado
+            return;
+          }
+
           const book = await getOrderBook(decision.tokenId);
           const midpoint = decision.outcome === "Up" ? best.midUp : best.midDown;
           const bidPrice = await calcMakerPrice(decision.tokenId, "BUY", midpoint, config.orderMargin);
@@ -334,6 +342,12 @@ async function main() {
       const { runStrategy } = require("./strategy");
       const strategyName = args.find(a => a.startsWith("--strategy="))?.split("=")[1] ?? "up-only";
       const decision = runStrategy(strategyName, best);
+
+      // Estratégia pode recusar apostar (ex: momentum em zona neutra)
+      if (!decision) {
+        logger.warn(`⏭  Estratégia [${strategyName}] recusou apostar nesta janela — zona neutra.`);
+        process.exit(0);
+      }
       // ─────────────────────────────────────────────────────
 
       // Captura orderbook antes de decidir o preço
