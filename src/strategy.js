@@ -165,6 +165,12 @@ function runStrategy(name, market) {
   }
 
   const decision = fn(market);
+
+  if (!decision) {
+    logger.info(`🎲 Estratégia [${name}]: zona neutra — sem aposta (midUp: ${(market.midUp * 100).toFixed(1)}%)`);
+    return null;
+  }
+
   logger.info(`🎲 Estratégia [${name}]: ${decision.rationale}`);
   logger.info(`   Apostando em: ${decision.outcome} | Token: ${decision.tokenId?.slice(0, 20)}...`);
   return decision;
