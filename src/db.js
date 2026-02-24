@@ -236,6 +236,8 @@ function getStats({ mode = null, strategy = null, limit = null } = {}) {
   const summary = db.prepare(`
     SELECT
       COUNT(*) as total_rounds,
+      SUM(CASE WHEN mode IN ('order','dry') THEN 1 ELSE 0 END) as real_rounds,
+      SUM(CASE WHEN mode = 'sim' THEN 1 ELSE 0 END) as sim_rounds,
       SUM(CASE WHEN order_status = 'MATCHED' THEN 1 ELSE 0 END) as filled,
       SUM(CASE WHEN order_status = 'CANCELED' THEN 1 ELSE 0 END) as cancelled,
       SUM(CASE WHEN order_status = 'ERROR' THEN 1 ELSE 0 END) as errors,
@@ -243,8 +245,9 @@ function getStats({ mode = null, strategy = null, limit = null } = {}) {
       SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) as resolved,
       SUM(CASE WHEN resolved = 1 AND won = 1 THEN 1 ELSE 0 END) as wins,
       SUM(CASE WHEN resolved = 1 AND won = 0 THEN 1 ELSE 0 END) as losses,
-      SUM(CASE WHEN resolved = 1 THEN profit ELSE 0 END) as total_profit,
-      SUM(usdc_submitted) as total_wagered,
+      SUM(CASE WHEN resolved = 1 AND mode != 'sim' THEN profit ELSE 0 END) as total_profit,
+      SUM(CASE WHEN mode != 'sim' THEN usdc_submitted ELSE 0 END) as total_wagered,
+      SUM(CASE WHEN resolved = 1 AND mode = 'sim' THEN profit ELSE 0 END) as sim_profit,
       AVG(CASE WHEN order_status = 'MATCHED' THEN shares_matched / shares_submitted ELSE NULL END) as avg_fill_rate
     FROM rounds ${whereClause}
   `).get();

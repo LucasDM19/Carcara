@@ -25,7 +25,11 @@
     "order:dummy": "node src/index.js --mode=order --strategy=dummy",
     "order:up": "node src/index.js --mode=order --strategy=up-only",
     "order:down": "node src/index.js --mode=order --strategy=down-only",
-    "stats:strategies": "node src/index.js --mode=stats --strategies"
+    "stats:strategies": "node src/index.js --mode=stats --strategies",
+    "sim": "node src/index.js --mode=sim",
+    "sim:dummy": "node src/index.js --mode=sim --strategy=dummy",
+    "sim:up": "node src/index.js --mode=sim --strategy=up-only",
+    "sim:down": "node src/index.js --mode=sim --strategy=down-only"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",

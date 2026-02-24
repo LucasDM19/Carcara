@@ -34,12 +34,15 @@ function printDashboard({ mode = null, strategy = null } = {}) {
   logger.divider();
 
   // ── Resumo geral ────────────────────────────────────────
-  console.log(chalk.bold("\n  APOSTAS"));
-  console.log(`  Total de rounds  : ${chalk.cyan(s.total_rounds)}`);
-  console.log(`  Preenchidas      : ${chalk.green(s.filled)}  (${pct(s.filled, s.total_rounds)})`);
-  console.log(`  Canceladas       : ${chalk.gray(s.cancelled)}  (${pct(s.cancelled, s.total_rounds)})`);
+  console.log(chalk.bold("\n  APOSTAS REAIS"));
+  console.log(`  Total de rounds  : ${chalk.cyan(s.real_rounds ?? s.total_rounds)}`);
+  console.log(`  Preenchidas      : ${chalk.green(s.filled)}  (${pct(s.filled, s.real_rounds ?? s.total_rounds)})`);
+  console.log(`  Canceladas       : ${chalk.gray(s.cancelled)}  (${pct(s.cancelled, s.real_rounds ?? s.total_rounds)})`);
   console.log(`  Taker fills      : ${s.taker_fills > 0 ? chalk.red(s.taker_fills) : chalk.green("0")}  ← deve ser sempre 0`);
   console.log(`  Erros            : ${s.errors > 0 ? chalk.red(s.errors) : chalk.green("0")}`);
+  if (s.sim_rounds > 0) {
+    console.log(`  Simulações (SIM) : ${chalk.blue(s.sim_rounds)}  ${chalk.gray("(dry bets — não contam no lucro real)")}`);
+  }
 
   // ── Resultados ───────────────────────────────────────────
   console.log(chalk.bold("\n  RESULTADOS  (apostas resolvidas)"));
@@ -56,6 +59,12 @@ function printDashboard({ mode = null, strategy = null } = {}) {
     console.log(`  Lucro total      : ${signed(s.total_profit)}  USDC`);
     const roi = s.total_wagered ? (s.total_profit / s.total_wagered) * 100 : 0;
     console.log(`  ROI              : ${signed(roi, 1)}%`);
+    if ((s.sim_rounds ?? 0) > 0 && s.sim_profit != null) {
+      console.log(`  ${chalk.blue("Lucro simulado   :")} ${signed(s.sim_profit)}  USDC  ${chalk.gray("(se SIMs fossem reais)")}`);
+    }
+    if (s.sim_rounds > 0 && s.sim_profit != null) {
+      console.log(`  ${chalk.blue("Lucro simulado   :")} ${signed(s.sim_profit)}  USDC  ${chalk.gray("(se fossem apostas reais)")}`);
+    }
   }
 
   // ── Últimas apostas ──────────────────────────────────────

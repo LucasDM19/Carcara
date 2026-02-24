@@ -33,7 +33,8 @@ function getPendingRounds() {
            outcome, shares_matched, usdc_submitted, order_status
     FROM rounds
     WHERE resolved = 0
-      AND order_status = 'MATCHED'
+      AND order_status IN ('MATCHED', 'DRY')
+      AND outcome IS NOT NULL
       AND datetime(market_end_date) < datetime('now')
     ORDER BY market_end_date ASC
   `).all();

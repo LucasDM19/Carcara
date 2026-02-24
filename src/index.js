@@ -13,6 +13,7 @@
 //   --mode=capture     → Fase 4: Captura dados de mercado sem apostar
 //   --mode=stats       → Fase 4: Dashboard de métricas no terminal
 //   --mode=stats --backtest → Fase 4: Análise por faixa de midpoint
+//   --mode=sim               → Fase 4+: Simulação contínua em loop (dry bets)
 //   --mode=resolve           → Fase 4: Auto-resolve rounds via Gamma API
 //   --mode=resolve:manual    → Fase 4: Resolve manualmente (fallback)
 //   --mode=auth              → Utilitário: gerencia credenciais da API
@@ -23,6 +24,8 @@
 //   down-only → sempre aposta Down
 //
 // Exemplos:
+//   npm run sim                               → simulação contínua (dummy, aguarda fechar)
+//   npm run sim -- --strategy=dummy --interval=30 → a cada 30s
 //   npm run order                              → aposta Up (padrão)
 //   npm run order -- --strategy=dummy          → aposta aleatório
 //   npm run capture                            → coleta dados sem apostar
@@ -80,6 +83,156 @@ async function main() {
 
       await runOnce();
       setInterval(runOnce, 30_000);
+      break;
+    }
+
+    // -------------------------------------------------------
+    // SIM: Simulação contínua — dry bets em loop
+    // Acumula métricas sem gastar dinheiro real.
+    // Uso: npm run sim
+    //      npm run sim -- --strategy=dummy --interval=30
+    // -------------------------------------------------------
+    case "sim": {
+      const { findBtcMarketsViaGamma, getOrderBook } = require("./market");
+      const { selectBestMarket } = require("./selector");
+      const { calcMakerPrice } = require("./order");
+      const { runStrategy } = require("./strategy");
+      const { insertRound, insertOrderbookSnapshot } = require("./db");
+      const { autoResolve } = require("./resolver");
+      const {
+        startVolatilityMonitor, waitForData, stopVolatilityMonitor, getVolatilityState, formatVolatilityState,
+      } = require("./volatility");
+
+      const strategyName = args.find(a => a.startsWith("--strategy="))?.split("=")[1] ?? "dummy";
+      // Intervalo mínimo entre iterações em segundos (padrão: aguarda o mercado fechar)
+      const intervalSec = parseInt(args.find(a => a.startsWith("--interval="))?.split("=")[1] ?? "0");
+
+      logger.info(`🎮 SIM — Simulação contínua`);
+      logger.info(`   Estratégia : ${strategyName}`);
+      logger.info(`   Intervalo  : ${intervalSec > 0 ? intervalSec + "s fixo" : "aguarda mercado fechar"}`);
+      logger.info(`   Ctrl+C para parar.`);
+      logger.divider();
+
+      // Inicia monitor de volatilidade uma vez — fica ativo o loop todo
+      startVolatilityMonitor();
+      try { await waitForData(15_000); } catch { /* ok */ }
+
+      let iteration = 0;
+      let lastConditionId = null;
+      let lastEndDate = null;
+
+      const runIteration = async () => {
+        iteration++;
+        logger.divider();
+        logger.info(`[SIM #${iteration}] ${new Date().toISOString()}`);
+
+        try {
+          const volState = getVolatilityState();
+          logger.info(`   ${formatVolatilityState(volState)}`);
+
+          const rawMarkets = await findBtcMarketsViaGamma();
+          if (!rawMarkets.length) {
+            logger.warn("   Nenhum mercado encontrado — aguardando...");
+            return;
+          }
+
+          const best = await selectBestMarket(rawMarkets);
+          if (!best) {
+            logger.warn("   Nenhum mercado elegível — aguardando...");
+            return;
+          }
+
+          // Evita registrar o mesmo mercado duas vezes seguidas
+          const condId = best.market.condition_id || best.market.id;
+          if (condId === lastConditionId) {
+            logger.info(`   Mesmo mercado da iteração anterior — aguardando fechar.`);
+            return;
+          }
+
+          const decision = runStrategy(strategyName, best);
+          const book = await getOrderBook(decision.tokenId);
+          const midpoint = decision.outcome === "Up" ? best.midUp : best.midDown;
+          const bidPrice = await calcMakerPrice(decision.tokenId, "BUY", midpoint, config.orderMargin);
+          const simulatedShares = Math.floor((config.maxBetSizeUsdc / bidPrice) * 100) / 100;
+
+          const roundId = insertRound({
+            mode: "sim",
+            strategy: strategyName,
+            condition_id: condId,
+            market_name: best.market.question || best.market.title,
+            market_end_date: best.market.end_date,
+            seconds_to_close: best.secondsToClose,
+            market_score: best.score,
+            mid_up: best.midUp,
+            mid_down: best.midDown,
+            spread: best.spread,
+            side: "BUY",
+            token_id: decision.tokenId,
+            outcome: decision.outcome,
+            price_submitted: bidPrice,
+            shares_submitted: simulatedShares,
+            usdc_submitted: config.maxBetSizeUsdc,
+            wait_ms: config.orderWaitMs,
+            margin_used: config.orderMargin,
+            order_id: null,
+            order_status: "DRY",
+            shares_matched: simulatedShares,
+            taker_fill: 0,
+            cancelled_immediately: 0,
+            vol_level: volState.level,
+            vol_speed: volState.speed,
+            vol_stddev: volState.stddev,
+            vol_amplitude: volState.amplitude,
+            btc_price: volState.price,
+          });
+
+          insertOrderbookSnapshot(roundId, decision.tokenId, book);
+
+          logger.success(`   ✅ Sim #${roundId} registrado — ${decision.outcome} @ ${bidPrice} | ${simulatedShares} shares | Fecha em ${best.secondsToClose}s`);
+
+          lastConditionId = condId;
+          lastEndDate = new Date(best.market.end_date);
+
+          // Tenta resolver rounds antigos pendentes
+          const { resolved } = await autoResolve();
+          if (resolved > 0) logger.success(`   🎯 ${resolved} round(s) resolvidos automaticamente.`);
+
+        } catch (err) {
+          logger.error(`   Erro na iteração: ${err.message}`);
+        }
+      };
+
+      // Função que calcula quando rodar a próxima iteração
+      const scheduleNext = async () => {
+        await runIteration();
+
+        let waitMs;
+        if (intervalSec > 0) {
+          waitMs = intervalSec * 1000;
+        } else if (lastEndDate) {
+          // Aguarda o mercado atual fechar + 5s de margem
+          const msUntilClose = lastEndDate.getTime() - Date.now() + 5_000;
+          waitMs = Math.max(msUntilClose, 10_000);
+          logger.info(`   ⏳ Próxima iteração em ${Math.round(waitMs / 1000)}s (mercado fecha às ${lastEndDate.toISOString()})`);
+        } else {
+          waitMs = 30_000; // fallback
+        }
+
+        setTimeout(scheduleNext, waitMs);
+      };
+
+      process.on("SIGINT", () => {
+        stopVolatilityMonitor();
+        logger.info(`
+⏹  SIM encerrado após ${iteration} iteração(ões).`);
+        logger.info(`   Execute npm run stats para ver os resultados.`);
+        process.exit(0);
+      });
+
+      // Inicia
+      scheduleNext();
+      // Mantém o processo vivo
+      await new Promise(() => {});
       break;
     }
 
@@ -220,12 +373,15 @@ async function main() {
         wait_ms: config.orderWaitMs,
         margin_used: config.orderMargin,
         order_id: result.orderId ?? null,
-        order_status: result.dryRun ? "DRY"
+        order_status: mode === "dry" ? "DRY"
           : result.cancelledImmediately ? "CANCELED"
           : result.filled ? "MATCHED"
           : result.success ? "CANCELED"
           : "ERROR",
-        shares_matched: result.matchedSize ?? 0,
+        // Para DRY: simula shares como se a ordem tivesse preenchido totalmente
+        shares_matched: mode === "dry"
+          ? (result.totalSize ?? Math.floor((config.maxBetSizeUsdc / bidPrice) * 100) / 100)
+          : (result.matchedSize ?? 0),
         taker_fill: result.takerFill ? 1 : 0,
         cancelled_immediately: result.cancelledImmediately ? 1 : 0,
         vol_level: volState.level ?? "UNKNOWN",
