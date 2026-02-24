@@ -207,8 +207,7 @@ function printStrategyBreakdown() {
   console.log(chalk.gray("  " + "─".repeat(58)));
 
   // ── Simulações ────────────────────────────────────────────
-  console.log(chalk.bold.yellow("
-  🦅 CARCARÁ — Comparação de Estratégias (SIMULADO)"));
+  console.log(chalk.bold.yellow("\n  🦅 CARCARÁ — Comparação de Estratégias (SIMULADO)"));
   console.log(chalk.gray("  " + "─".repeat(70)));
   console.log(chalk.gray("  Estratégia    Rounds  Resolvidos  WinRate   Lucro sim   ROI sim   Pulados"));
   console.log(chalk.gray("  " + "─".repeat(70)));
