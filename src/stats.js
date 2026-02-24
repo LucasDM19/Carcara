@@ -164,16 +164,17 @@ function printStrategyBreakdown() {
 
   const strategies = db.prepare(`
     SELECT DISTINCT COALESCE(strategy, 'up-only') as strategy FROM rounds
-    WHERE mode = 'order' ORDER BY strategy
+    WHERE mode IN ('order', 'sim') ORDER BY strategy
   `).all().map(r => r.strategy);
 
   if (strategies.length === 0) {
-    logger.info("Nenhuma aposta real registrada ainda.");
+    logger.info("Nenhuma aposta registrada ainda.");
     return;
   }
 
+  // ── Apostas reais ─────────────────────────────────────────
   logger.divider();
-  console.log(chalk.bold.yellow("  🦅 CARCARÁ — Comparação de Estratégias"));
+  console.log(chalk.bold.yellow("  🦅 CARCARÁ — Comparação de Estratégias (REAIS)"));
   logger.divider();
   console.log(chalk.gray("  Estratégia    Rounds  Preench  WinRate  Lucro     ROI"));
   console.log(chalk.gray("  " + "─".repeat(58)));
@@ -191,6 +192,7 @@ function printStrategyBreakdown() {
       WHERE mode = 'order' AND COALESCE(strategy, 'up-only') = ?
     `).get(strat);
 
+    if (!row.total) continue;
     const winRate = row.resolved ? pct(row.wins, row.resolved) : chalk.gray("—");
     const profit = row.profit != null ? signed(row.profit) : chalk.gray("—");
     const roi = row.wagered && row.profit != null
@@ -203,6 +205,49 @@ function printStrategyBreakdown() {
     );
   }
   console.log(chalk.gray("  " + "─".repeat(58)));
+
+  // ── Simulações ────────────────────────────────────────────
+  console.log(chalk.bold.yellow("
+  🦅 CARCARÁ — Comparação de Estratégias (SIMULADO)"));
+  console.log(chalk.gray("  " + "─".repeat(70)));
+  console.log(chalk.gray("  Estratégia    Rounds  Resolvidos  WinRate   Lucro sim   ROI sim   Pulados"));
+  console.log(chalk.gray("  " + "─".repeat(70)));
+
+  for (const strat of strategies) {
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN resolved=1 THEN 1 ELSE 0 END) as resolved,
+        SUM(CASE WHEN resolved=1 AND won=1 THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN resolved=1 THEN profit ELSE 0 END) as profit,
+        SUM(usdc_submitted) as wagered
+      FROM rounds
+      WHERE mode = 'sim' AND strategy = ?
+    `).get(strat);
+
+    if (!row.total) continue;
+
+    // Rounds pulados pela estratégia (zona neutra) — capturados como 'capture' com strategy tag
+    // Por ora estimamos: total registrado vs total de janelas disponíveis não é rastreável,
+    // mas podemos mostrar rounds com order_status='DRY' sem resolved ainda
+    const skipped = db.prepare(`
+      SELECT COUNT(*) as n FROM rounds
+      WHERE mode = 'sim' AND strategy = ? AND resolved = 0
+        AND datetime(market_end_date) < datetime('now')
+    `).get(strat).n;
+
+    const winRate = row.resolved ? pct(row.wins, row.resolved) : chalk.gray("—");
+    const profit = row.profit != null ? signed(row.profit) : chalk.gray("—");
+    const roi = row.wagered && row.profit != null
+      ? signed((row.profit / row.wagered) * 100, 1) + "%"
+      : chalk.gray("—");
+
+    console.log(
+      `  ${strat.padEnd(14)} ${String(row.total).padEnd(7)} ${String(row.resolved).padEnd(11)} ` +
+      `${String(winRate).padEnd(9)} ${String(profit).padEnd(11)} ${String(roi).padEnd(9)} ${skipped > 0 ? chalk.gray(skipped + " pend.") : ""}`
+    );
+  }
+  console.log(chalk.gray("  " + "─".repeat(70)));
   logger.divider();
 }
 
