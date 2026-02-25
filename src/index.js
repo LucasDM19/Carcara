@@ -149,7 +149,10 @@ async function main() {
             return;
           }
 
-          const decision = runStrategy(strategyName, best);
+          // Injeta estado de volatilidade no contexto do mercado para a estratégia value
+          best.volLevel = volState.level;
+
+          const decision = await runStrategy(strategyName, best);
 
           // Estratégia pode recusar apostar (ex: momentum em zona neutra)
           if (!decision) {
@@ -341,7 +344,11 @@ async function main() {
       // ── Estratégia: decide Up ou Down ────────────────────
       const { runStrategy } = require("./strategy");
       const strategyName = args.find(a => a.startsWith("--strategy="))?.split("=")[1] ?? "up-only";
-      const decision = runStrategy(strategyName, best);
+      // Injeta estado de volatilidade no contexto do mercado para a estratégia value
+      const _volForStrategy = getVolatilityState();
+      best.volLevel = _volForStrategy.level;
+
+      const decision = await runStrategy(strategyName, best);
 
       // Estratégia pode recusar apostar (ex: momentum em zona neutra)
       if (!decision) {
