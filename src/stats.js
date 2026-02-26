@@ -247,6 +247,34 @@ function printStrategyBreakdown() {
     );
   }
   console.log(chalk.gray("  " + "─".repeat(70)));
+
+  // ── P&L ajustado pelo fill model ─────────────────────────
+  console.log(chalk.bold.yellow("\n  🦅 CARCARÁ — P&L Simulado Ajustado (fill probability)"));
+  console.log(chalk.gray("  Corrige o P&L simulado pela probabilidade real de fill (~20-25%)"));
+  console.log(chalk.gray("  Esta é a estimativa mais fiel ao que aconteceria em apostas reais."));
+  console.log(chalk.gray("  " + "─".repeat(75)));
+  console.log(chalk.gray("  Estratégia    SimTotal  FillProb  AdjRounds  WinRate   AdjLucro   AdjROI"));
+  console.log(chalk.gray("  " + "─".repeat(75)));
+
+  try {
+    const { computeAdjustedSimStats } = require("./fill_model");
+    for (const strat of strategies) {
+      const adj = computeAdjustedSimStats(db, strat);
+      if (!adj) continue;
+      const wr   = chalk.cyan(`${adj.adjWinRate.toFixed(1)}%`.padEnd(9));
+      const prof = signed(adj.adjProfit);
+      const roi  = signed(adj.adjRoi, 1) + "%";
+      console.log(
+        `  ${strat.padEnd(14)} ${String(adj.totalSim).padEnd(9)} ` +
+        `${(adj.fillProb * 100).toFixed(0)}%`.padEnd(9) +
+        `${String(adj.adjRounds).padEnd(10)} ${wr} ${String(prof).padEnd(10)} ${roi}`
+      );
+    }
+  } catch (e) {
+    console.log(chalk.gray(`  Dados insuficientes para ajuste: ${e.message}`));
+  }
+
+  console.log(chalk.gray("  " + "─".repeat(75)));
   logger.divider();
 }
 

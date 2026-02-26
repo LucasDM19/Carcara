@@ -199,6 +199,25 @@ async function main() {
 
           insertOrderbookSnapshot(roundId, decision.tokenId, book);
 
+          // ── Fase 6: Estima probabilidade de fill ─────────
+          try {
+            const { getFillModel, predictFillProbability, extractFeatures } = require("./fill_model");
+            const { getDb } = require("./db");
+            const fillModel = getFillModel(getDb());
+            const bookRows = (book.bids || []).map(b => ({ side: "bids", ...b }))
+              .concat((book.asks || []).map(a => ({ side: "asks", ...a })));
+            const roundCtx = {
+              price_submitted: bidPrice,
+              spread: best.spread,
+              seconds_to_close: best.secondsToClose,
+              vol_level: volState.level,
+              mid_up: best.midUp,
+            };
+            const fillProb = predictFillProbability(fillModel, roundCtx, bookRows);
+            logger.info(`   📊 Fill probability estimada: ${(fillProb * 100).toFixed(1)}%`);
+          } catch { /* modelo ainda sem dados suficientes */ }
+          // ─────────────────────────────────────────────────
+
           logger.success(`   ✅ Sim #${roundId} registrado — ${decision.outcome} @ ${bidPrice} | ${simulatedShares} shares | Fecha em ${best.secondsToClose}s`);
 
           lastConditionId = condId;
