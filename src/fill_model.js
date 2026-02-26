@@ -37,14 +37,21 @@ function extractFeatures(round, bookRows) {
   const range = 0.03; // considera asks dentro de ±3 centavos do preço
 
   // Liquidez real nos asks próximos do nosso preço de compra
-  const nearAsks = (bookRows || []).filter(
+  // Força conversão numérica — CLOB pode retornar strings
+  const rows = (bookRows || []).map(r => ({
+    ...r,
+    price: parseFloat(r.price) || 0,
+    size:  parseFloat(r.size)  || 0,
+  }));
+
+  const nearAsks = rows.filter(
     r => r.side === "asks" && r.price >= price - range && r.price <= price + range
   );
-  const liquidityNear = nearAsks.reduce((sum, r) => sum + (r.size || 0), 0);
+  const liquidityNear = nearAsks.reduce((sum, r) => sum + r.size, 0);
   const hasNearAsk    = nearAsks.length > 0 ? 1 : 0;
 
   // Melhor ask disponível
-  const allAsks = (bookRows || []).filter(r => r.side === "asks");
+  const allAsks = rows.filter(r => r.side === "asks");
   const bestAsk = allAsks.length > 0
     ? Math.min(...allAsks.map(r => r.price))
     : 0.99; // AMM sempre disponível a ~0.50+
@@ -134,7 +141,10 @@ function trainFillModel(db) {
   }
 
   const normalize = (features) => {
-    return featureKeys.map(k => (features[k] - stats[k].min) / stats[k].range);
+    return featureKeys.map(k => {
+      const val = (features[k] - stats[k].min) / stats[k].range;
+      return isFinite(val) ? val : 0;
+    });
   };
 
   // Inicializa pesos
@@ -182,13 +192,17 @@ function predictFillProbability(model, round, bookRows) {
   const { weights, featureKeys, stats } = model;
 
   const normalize = (f) =>
-    featureKeys.map(k => (f[k] - stats[k].min) / stats[k].range);
+    featureKeys.map(k => {
+      const val = (f[k] - stats[k].min) / stats[k].range;
+      return isFinite(val) ? val : 0;
+    });
 
   const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, z))));
 
   const x = [...normalize(features), 1];
   const z = x.reduce((sum, xi, i) => sum + xi * (weights[i] ?? 0), 0);
-  return sigmoid(z);
+  const prob = sigmoid(z);
+  return isFinite(prob) ? Math.max(0.01, Math.min(0.99, prob)) : (model.fillRate ?? 0.20);
 }
 
 // ============================================================
