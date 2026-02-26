@@ -14,7 +14,8 @@
 //   --mode=stats       → Fase 4: Dashboard de métricas no terminal
 //   --mode=stats --backtest → Fase 4: Análise por faixa de midpoint
 //   --mode=sim               → Fase 4+: Simulação contínua em loop (dry bets)
-//   --mode=resolve           → Fase 4: Auto-resolve rounds via Gamma API
+//   --mode=resolve           → Fase 4: Auto-resolve + auto-redeem de ganhos
+//   --mode=redeem            → Fase 6: Resgata posições vencedoras na blockchain
 //   --mode=resolve:manual    → Fase 4: Resolve manualmente (fallback)
 //   --mode=auth              → Utilitário: gerencia credenciais da API
 //
@@ -263,6 +264,20 @@ async function main() {
       scheduleNext();
       // Mantém o processo vivo
       await new Promise(() => {});
+      break;
+    }
+
+    // -------------------------------------------------------
+    // REDEEM: Resgate automático de posições vencedoras
+    // -------------------------------------------------------
+    case "redeem": {
+      const { autoRedeem, watchAndRedeem } = require("./redeem");
+      const watchArg = args.find(a => a.startsWith("--watch="))?.split("=")[1];
+      if (watchArg) {
+        await watchAndRedeem(parseInt(watchArg));
+      } else {
+        await autoRedeem();
+      }
       break;
     }
 
@@ -524,7 +539,13 @@ async function main() {
       if (watchArg) {
         await watchAndResolve(parseInt(watchArg));
       } else {
-        await autoResolve();
+        const resolveResult = await autoResolve();
+        // Após resolver, tenta resgatar automaticamente os ganhos
+        if (resolveResult?.resolved > 0) {
+          logger.info("💰 Tentando resgatar posições vencedoras recém-resolvidas...");
+          const { autoRedeem } = require("./redeem");
+          await autoRedeem();
+        }
       }
       break;
     }

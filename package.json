@@ -34,7 +34,9 @@
     "sim:contrarian": "node src/index.js --mode=sim --strategy=contrarian",
     "order:momentum": "node src/index.js --mode=order --strategy=momentum",
     "sim:value": "node src/index.js --mode=sim --strategy=value",
-    "order:value": "node src/index.js --mode=order --strategy=value"
+    "order:value": "node src/index.js --mode=order --strategy=value",
+    "redeem": "node src/index.js --mode=redeem",
+    "redeem:watch": "node src/index.js --mode=redeem --watch=300"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",
