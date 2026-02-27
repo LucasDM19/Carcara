@@ -456,7 +456,9 @@ async function main() {
       } else {
         logger.warn("Operação não executada:", result);
       }
-      break;
+
+      stopVolatilityMonitor();
+      process.exit(0);
     }
 
     // -------------------------------------------------------
