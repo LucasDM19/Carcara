@@ -278,4 +278,235 @@ function printStrategyBreakdown() {
   logger.divider();
 }
 
-module.exports = { printDashboard, printBacktestSummary, printStrategyBreakdown };
+// ============================================================
+// Análise de Adverse Selection
+// Cruza win rate REAL com seconds_to_close e price_delta
+// para identificar condições onde adverse selection é menor
+// ============================================================
+function printAdverseSelectionAnalysis() {
+  const db = getDb();
+
+  logger.divider();
+  console.log(chalk.bold.yellow("  🦅 CARCARÁ — Análise de Adverse Selection (apostas REAIS)"));
+  console.log(chalk.gray("  Simulado vs Real por condição — identifica onde o edge real existe"));
+  logger.divider();
+
+  const realTotal = db.prepare(`
+    SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+    FROM rounds WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+  `).get();
+
+  if (!realTotal || realTotal.n < 5) {
+    console.log(chalk.gray("  Dados insuficientes — precisamos de ≥5 apostas reais preenchidas e resolvidas."));
+    logger.divider();
+    return;
+  }
+
+  console.log(
+    chalk.gray(`  Base: ${realTotal.n} apostas reais preenchidas | `) +
+    chalk.cyan(`win rate geral: ${(realTotal.wr * 100).toFixed(1)}%`) +
+    chalk.gray(` | Simulado geral: ~52.7%`) +
+    chalk.red(` | Gap (adverse selection): ~${(52.7 - realTotal.wr * 100).toFixed(1)}pp`)
+  );
+
+  // ── 1. Por tempo até fechar ─────────────────────────────
+  console.log(chalk.bold("\n  1. Win Rate Real por Tempo até Fechar"));
+  console.log(chalk.gray("  Hipótese: próximo do fechamento há menos tempo para o mercado se mover contra."));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+  console.log(chalk.gray("  Faixa tempo    Real_n  Real_WR   Sim_n  Sim_WR    Gap      Veredicto"));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+
+  const timeBuckets = [
+    { label: "< 1 min",    min: 0,    max: 60   },
+    { label: "1–2 min",    min: 60,   max: 120  },
+    { label: "2–3 min",    min: 120,  max: 180  },
+    { label: "3–5 min",    min: 180,  max: 300  },
+    { label: "5–10 min",   min: 300,  max: 600  },
+    { label: "> 10 min",   min: 600,  max: 99999},
+  ];
+
+  for (const b of timeBuckets) {
+    const real = db.prepare(`
+      SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+      FROM rounds
+      WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+        AND seconds_to_close >= ? AND seconds_to_close < ?
+    `).get(b.min, b.max);
+
+    const sim = db.prepare(`
+      SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+      FROM rounds
+      WHERE mode='sim' AND resolved=1
+        AND seconds_to_close >= ? AND seconds_to_close < ?
+    `).get(b.min, b.max);
+
+    if (!real.n && !sim.n) continue;
+
+    const realWr  = real.n  ? real.wr  * 100 : null;
+    const simWr   = sim.n   ? sim.wr   * 100 : null;
+    const gap     = (realWr !== null && simWr !== null) ? realWr - simWr : null;
+
+    const realStr = real.n ? `${real.n.toString().padEnd(6)} ${chalk.cyan((realWr).toFixed(1) + "%")}` : chalk.gray("  —  ".padEnd(14));
+    const simStr  = sim.n  ? `${sim.n.toString().padEnd(5)} ${(simWr).toFixed(1) + "%"}` : chalk.gray(" —  ".padEnd(10));
+    const gapStr  = gap !== null
+      ? (gap >= 0 ? chalk.green(`+${gap.toFixed(1)}pp`) : chalk.red(`${gap.toFixed(1)}pp`))
+      : chalk.gray("  —  ");
+
+    // Veredicto: gap ≥ 0 significa adverse selection baixa ou inexistente
+    const verdict = gap === null ? "" :
+      gap >= 5  ? chalk.green("✅ melhor") :
+      gap >= -3 ? chalk.yellow("〰 neutro") :
+                  chalk.red("❌ pior");
+
+    console.log(`  ${b.label.padEnd(14)} ${realStr.padEnd(18)} ${simStr.padEnd(13)} ${gapStr.padEnd(12)} ${verdict}`);
+  }
+
+  // ── 2. Por desconto em relação ao midpoint ──────────────
+  console.log(chalk.bold("\n  2. Win Rate Real por Desconto de Preço (price_delta = midUp - price_submitted)"));
+  console.log(chalk.gray("  Hipótese: desconto maior filtra vendedores oportunistas → menos adverse selection."));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+  console.log(chalk.gray("  Desconto       Real_n  Real_WR   Sim_n  Sim_WR    Gap      Veredicto"));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+
+  const priceBuckets = [
+    { label: "0.00–0.01",  min: 0.00,  max: 0.01  },
+    { label: "0.01–0.02",  min: 0.01,  max: 0.02  },
+    { label: "0.02–0.03",  min: 0.02,  max: 0.03  },
+    { label: "0.03–0.05",  min: 0.03,  max: 0.05  },
+    { label: "0.05–0.08",  min: 0.05,  max: 0.08  },
+    { label: "> 0.08",     min: 0.08,  max: 1.0   },
+  ];
+
+  for (const b of priceBuckets) {
+    const real = db.prepare(`
+      SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+      FROM rounds
+      WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+        AND (mid_up - price_submitted) >= ? AND (mid_up - price_submitted) < ?
+    `).get(b.min, b.max);
+
+    const sim = db.prepare(`
+      SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+      FROM rounds
+      WHERE mode='sim' AND resolved=1
+        AND (mid_up - price_submitted) >= ? AND (mid_up - price_submitted) < ?
+    `).get(b.min, b.max);
+
+    if (!real.n && !sim.n) continue;
+
+    const realWr = real.n ? real.wr * 100 : null;
+    const simWr  = sim.n  ? sim.wr  * 100 : null;
+    const gap    = (realWr !== null && simWr !== null) ? realWr - simWr : null;
+
+    const realStr = real.n ? `${real.n.toString().padEnd(6)} ${chalk.cyan((realWr).toFixed(1) + "%")}` : chalk.gray("  —  ".padEnd(14));
+    const simStr  = sim.n  ? `${sim.n.toString().padEnd(5)} ${(simWr).toFixed(1) + "%"}` : chalk.gray(" —  ".padEnd(10));
+    const gapStr  = gap !== null
+      ? (gap >= 0 ? chalk.green(`+${gap.toFixed(1)}pp`) : chalk.red(`${gap.toFixed(1)}pp`))
+      : chalk.gray("  —  ");
+
+    const verdict = gap === null ? "" :
+      gap >= 5  ? chalk.green("✅ melhor") :
+      gap >= -3 ? chalk.yellow("〰 neutro") :
+                  chalk.red("❌ pior");
+
+    console.log(`  ${b.label.padEnd(14)} ${realStr.padEnd(18)} ${simStr.padEnd(13)} ${gapStr.padEnd(12)} ${verdict}`);
+  }
+
+  // ── 3. Por volatilidade ─────────────────────────────────
+  console.log(chalk.bold("\n  3. Win Rate Real por Nível de Volatilidade"));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+  console.log(chalk.gray("  Vol level      Real_n  Real_WR   Sim_n  Sim_WR    Gap      Veredicto"));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+
+  const volLevels = ["CALM", "ALERT", "STORM"];
+  for (const lvl of volLevels) {
+    const real = db.prepare(`
+      SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+      FROM rounds
+      WHERE mode='order' AND order_status='MATCHED' AND resolved=1 AND vol_level=?
+    `).get(lvl);
+
+    const sim = db.prepare(`
+      SELECT COUNT(*) as n, AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+      FROM rounds WHERE mode='sim' AND resolved=1 AND vol_level=?
+    `).get(lvl);
+
+    if (!real.n && !sim.n) continue;
+
+    const realWr = real.n ? real.wr * 100 : null;
+    const simWr  = sim.n  ? sim.wr  * 100 : null;
+    const gap    = (realWr !== null && simWr !== null) ? realWr - simWr : null;
+
+    const realStr = real.n ? `${real.n.toString().padEnd(6)} ${chalk.cyan((realWr).toFixed(1) + "%")}` : chalk.gray("  —  ".padEnd(14));
+    const simStr  = sim.n  ? `${sim.n.toString().padEnd(5)} ${(simWr).toFixed(1) + "%"}` : chalk.gray(" —  ".padEnd(10));
+    const gapStr  = gap !== null
+      ? (gap >= 0 ? chalk.green(`+${gap.toFixed(1)}pp`) : chalk.red(`${gap.toFixed(1)}pp`))
+      : chalk.gray("  —  ");
+    const verdict = gap === null ? "" :
+      gap >= 5  ? chalk.green("✅ melhor") :
+      gap >= -3 ? chalk.yellow("〰 neutro") :
+                  chalk.red("❌ pior");
+
+    console.log(`  ${lvl.padEnd(14)} ${realStr.padEnd(18)} ${simStr.padEnd(13)} ${gapStr.padEnd(12)} ${verdict}`);
+  }
+
+  // ── 4. Resumo: qual condição minimiza adverse selection ─
+  console.log(chalk.bold("\n  4. Recomendação para próxima calibração"));
+  console.log(chalk.gray("  " + "─".repeat(72)));
+
+  const bestTime = db.prepare(`
+    SELECT
+      CASE
+        WHEN seconds_to_close < 60   THEN '< 1 min'
+        WHEN seconds_to_close < 120  THEN '1-2 min'
+        WHEN seconds_to_close < 180  THEN '2-3 min'
+        WHEN seconds_to_close < 300  THEN '3-5 min'
+        WHEN seconds_to_close < 600  THEN '5-10 min'
+        ELSE '> 10 min'
+      END as bucket,
+      COUNT(*) as n,
+      AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+    FROM rounds
+    WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+    GROUP BY bucket HAVING n >= 3
+    ORDER BY wr DESC LIMIT 1
+  `).get();
+
+  const bestDelta = db.prepare(`
+    SELECT
+      ROUND((mid_up - price_submitted) * 20) / 20 as delta_bucket,
+      COUNT(*) as n,
+      AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END) as wr
+    FROM rounds
+    WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+    GROUP BY delta_bucket HAVING n >= 3
+    ORDER BY wr DESC LIMIT 1
+  `).get();
+
+  if (bestTime) {
+    console.log(
+      `  Melhor janela temporal : ${chalk.green(bestTime.bucket)} ` +
+      `(${bestTime.n} apostas, win rate ${chalk.green((bestTime.wr * 100).toFixed(1) + "%")})`
+    );
+  }
+  if (bestDelta) {
+    console.log(
+      `  Melhor desconto        : ${chalk.green("~" + (bestDelta.delta_bucket * 100).toFixed(0) + "¢")} abaixo do mid ` +
+      `(${bestDelta.n} apostas, win rate ${chalk.green((bestDelta.wr * 100).toFixed(1) + "%")})`
+    );
+
+    const currentMargin = 0.005;
+    if (bestDelta.delta_bucket > currentMargin + 0.01) {
+      console.log(
+        chalk.yellow(`
+  ⚠️  ORDER_MARGIN atual (${(currentMargin*100).toFixed(1)}¢) está abaixo do ótimo observado.`) +
+        chalk.yellow(`
+     Considere aumentar para ${(bestDelta.delta_bucket * 100).toFixed(0)}¢ no .env → ORDER_MARGIN=${bestDelta.delta_bucket.toFixed(3)}`)
+      );
+    }
+  }
+
+  logger.divider();
+}
+
+module.exports = { printDashboard, printBacktestSummary, printStrategyBreakdown, printAdverseSelectionAnalysis };

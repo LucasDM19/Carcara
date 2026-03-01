@@ -36,7 +36,8 @@
     "sim:value": "node src/index.js --mode=sim --strategy=value",
     "order:value": "node src/index.js --mode=order --strategy=value",
     "redeem": "node src/index.js --mode=redeem",
-    "redeem:watch": "node src/index.js --mode=redeem --watch=300"
+    "redeem:watch": "node src/index.js --mode=redeem --watch=300",
+    "stats:adverse": "node src/index.js --mode=stats --adverse"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",

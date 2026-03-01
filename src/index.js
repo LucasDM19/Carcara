@@ -526,8 +526,12 @@ async function main() {
       const backtest = args.includes("--backtest");
       const strategies = args.includes("--strategies");
       printDashboard({ mode: modeFilter });
-      if (backtest) printBacktestSummary();
+      if (backtest)   printBacktestSummary();
       if (strategies) printStrategyBreakdown();
+      if (args.includes("--adverse")) {
+        const { printAdverseSelectionAnalysis } = require("./stats");
+        printAdverseSelectionAnalysis();
+      }
       break;
     }
 
