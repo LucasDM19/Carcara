@@ -1,4 +1,4 @@
-// src/selector.js
+// src/selector.js — CARCARÁ
 // ============================================================
 // SELETOR DE MERCADO INTELIGENTE
 // ============================================================
@@ -20,24 +20,6 @@
 //
 //  O mercado com maior score final é retornado como selecionado.
 // ============================================================
-/*
-npm run select   # seleção única
-npm run watch    # loop a cada 30s — bom para observar ao longo do tempo
-```
-
----
-
-**O que o seletor faz:**
-
-Ele descarta mercados por critérios obrigatórios primeiro — mercados com menos de 60 segundos para fechar (tarde demais para uma ordem ser executada), com mais de 15 minutos (pouca liquidez ainda), com midpoint fora de 20%–80% (já resolvido na prática), ou com spread acima de 10%.
-
-Nos que sobram, calcula um score ponderado com quatro dimensões. O equilíbrio do mercado (midpoint próximo de 50%) vale 40% do score — é o critério mais importante porque um mercado em 50%/50% é onde a aposta faz mais sentido. O spread vale 30%, pois impacta diretamente o custo. O timing vale 20%, com preferência por mercados entre 2 e 8 minutos para fechar (o ponto ideal de liquidez versus tempo). A liquidez bruta vale 10%.
-
-No output você verá algo como:
-```
-Score:  72.3%  |  Up: 53.5%  |  Spread: 0.010  |  Fecha em: 4m30s  |  "Bitcoin Up or Down - ..."
-           ↳ balance:93%  spread:90%  time:85%  liquidity:40%
-*/
 
 const { getMidpoint, getSpread, getOrderBook, normalizeMarket } = require("./market");
 const logger = require("./logger");
@@ -129,10 +111,19 @@ async function analyzeMarket(rawMarket) {
   // 2. Spread baixo é bom (invertido)
   const spreadScore = 1 - spread / CONFIG.MAX_SPREAD;   // 0 a 1
 
-  // 3. Tempo restante: preferimos entre 2 e 8 minutos
-  //    Score máximo em torno de 5 min, cai nas extremidades
-  const IDEAL_SECONDS = 5 * 60;
-  const timeScore = 1 - Math.abs(secondsToClose - IDEAL_SECONDS) / (CONFIG.MAX_SECONDS_TO_CLOSE);
+  // 3. Tempo restante: preferimos entre 5 e 10 minutos (dados de adverse selection)
+  //    Score máximo no platô 300–600s, cai fora dessa faixa
+  //    Forma trapezoidal: sobe até 300s, plano até 600s, desce depois
+  const TIME_IDEAL_MIN = 5 * 60;   // 300s
+  const TIME_IDEAL_MAX = 10 * 60;  // 600s
+  let timeScore;
+  if (secondsToClose >= TIME_IDEAL_MIN && secondsToClose <= TIME_IDEAL_MAX) {
+    timeScore = 1.0; // platô ótimo
+  } else if (secondsToClose < TIME_IDEAL_MIN) {
+    timeScore = secondsToClose / TIME_IDEAL_MIN; // sobe linearmente até 300s
+  } else {
+    timeScore = Math.max(0, 1 - (secondsToClose - TIME_IDEAL_MAX) / (CONFIG.MAX_SECONDS_TO_CLOSE - TIME_IDEAL_MAX));
+  }
 
   // 4. Liquidez: tamanho do melhor bid + melhor ask
   const bestBidSize = parseFloat(bookUp.bids?.[0]?.size || 0);
