@@ -151,7 +151,11 @@ async function redeemViaProxy(wallet, proxyAddress, conditionBytes32, indexSets)
   });
 
   logger.info(`   Tx enviada (via proxy): ${tx.hash}`);
-  const receipt = await tx.wait();
+  logger.info(`   Aguardando confirmação (timeout 60s)...`);
+  const receipt = await Promise.race([
+    tx.wait(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout aguardando confirmação")), 60_000))
+  ]);
   return receipt;
 }
 
@@ -176,7 +180,11 @@ async function redeemDirect(wallet, conditionBytes32, indexSets) {
   );
 
   logger.info(`   Tx enviada (direto): ${tx.hash}`);
-  const receipt = await tx.wait();
+  logger.info(`   Aguardando confirmação (timeout 60s)...`);
+  const receipt = await Promise.race([
+    tx.wait(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout aguardando confirmação")), 60_000))
+  ]);
   return receipt;
 }
 
