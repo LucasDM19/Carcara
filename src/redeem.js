@@ -146,8 +146,8 @@ async function redeemViaProxy(wallet, proxyAddress, conditionBytes32, indexSets)
   const proxy = new ethers.Contract(proxyAddress, PROXY_ABI, signer);
   const tx = await proxy.execute(CTF_ADDRESS, 0, calldata, {
     gasLimit: 300_000,
-    maxPriorityFeePerGas: ethers.utils.parseUnits("30", "gwei"),  // Polygon mínimo ~25 Gwei
-    maxFeePerGas:         ethers.utils.parseUnits("60", "gwei"),  // teto confortável
+    maxPriorityFeePerGas: ethers.utils.parseUnits("80", "gwei"),  // acima do mínimo Polygon
+    maxFeePerGas:         ethers.utils.parseUnits("150", "gwei"), // alto o suficiente para não travar
   });
 
   logger.info(`   Tx enviada (via proxy): ${tx.hash}`);
@@ -252,8 +252,8 @@ async function cancelStuckTx(txHash) {
   const newGas   = ethers.BigNumber.from(oldGas || 0)
     .mul(150).div(100)
     .gt(ethers.utils.parseUnits("100", "gwei"))
-    ? ethers.BigNumber.from(oldGas).mul(150).div(100)
-    : ethers.utils.parseUnits("100", "gwei");
+    ? ethers.BigNumber.from(oldGas).mul(200).div(100)
+    : ethers.utils.parseUnits("150", "gwei");
 
   logger.info(`   Nonce original : ${nonce}`);
   logger.info(`   Gas original   : ${ethers.utils.formatUnits(oldGas || 0, "gwei")} Gwei`);
