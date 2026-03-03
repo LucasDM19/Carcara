@@ -271,7 +271,12 @@ async function main() {
     // REDEEM: Resgate automático de posições vencedoras
     // -------------------------------------------------------
     case "redeem": {
-      const { autoRedeem, watchAndRedeem } = require("./redeem");
+      const { autoRedeem, watchAndRedeem, cancelStuckTx } = require("./redeem");
+      const cancelHash = args.find(a => a.startsWith("--cancel="))?.split("=")[1];
+      if (cancelHash) {
+        await cancelStuckTx(cancelHash);
+        break;
+      }
       const watchArg = args.find(a => a.startsWith("--watch="))?.split("=")[1];
       if (watchArg) {
         await watchAndRedeem(parseInt(watchArg));

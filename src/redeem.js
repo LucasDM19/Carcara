@@ -228,6 +228,69 @@ async function redeemRound(round, wallet, proxyAddress) {
 }
 
 // ============================================================
+// Cancela transação travada enviando tx vazia com mesmo nonce
+// e gas price maior (replace-by-fee)
+// ============================================================
+async function cancelStuckTx(txHash) {
+  logger.info(`🔧 Tentando cancelar tx travada: ${txHash}`);
+
+  const { privateKey } = config.loadTradingCredentials();
+  const wallet  = new ethers.Wallet(privateKey);
+  const provider = await getProvider();
+  const signer  = wallet.connect(provider);
+
+  // Busca a tx original para pegar o nonce
+  const origTx = await provider.getTransaction(txHash);
+  if (!origTx) {
+    logger.error("Transação não encontrada no provider. Tente outro RPC.");
+    return false;
+  }
+
+  const nonce    = origTx.nonce;
+  const oldGas   = origTx.maxFeePerGas || origTx.gasPrice;
+  // Novo gas = 150% do original, mínimo 100 Gwei para garantir replace
+  const newGas   = ethers.BigNumber.from(oldGas || 0)
+    .mul(150).div(100)
+    .gt(ethers.utils.parseUnits("100", "gwei"))
+    ? ethers.BigNumber.from(oldGas).mul(150).div(100)
+    : ethers.utils.parseUnits("100", "gwei");
+
+  logger.info(`   Nonce original : ${nonce}`);
+  logger.info(`   Gas original   : ${ethers.utils.formatUnits(oldGas || 0, "gwei")} Gwei`);
+  logger.info(`   Novo gas price : ${ethers.utils.formatUnits(newGas, "gwei")} Gwei`);
+  logger.info(`   Enviando tx vazia para cancelar...`);
+
+  try {
+    const cancelTx = await signer.sendTransaction({
+      to:       wallet.address,   // self-transfer — só cancela a tx
+      value:    0,
+      nonce,
+      gasLimit: 21_000,
+      maxPriorityFeePerGas: newGas,
+      maxFeePerGas:         newGas,
+    });
+
+    logger.info(`   Tx de cancel enviada: ${cancelTx.hash}`);
+    logger.info(`   Aguardando confirmação...`);
+
+    const receipt = await Promise.race([
+      cancelTx.wait(),
+      new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 60_000)),
+    ]);
+
+    if (receipt.status === 1) {
+      logger.success(`   ✅ Tx original cancelada! Nonce ${nonce} liberado.`);
+      logger.info(`   Agora rode npm run redeem novamente.`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    logger.error(`   Falha ao cancelar: ${err.message}`);
+    return false;
+  }
+}
+
+// ============================================================
 // Executa resgate de todos os rounds pendentes
 // ============================================================
 async function autoRedeem() {
@@ -295,4 +358,4 @@ async function watchAndRedeem(intervalSeconds = 300) {
   });
 }
 
-module.exports = { autoRedeem, watchAndRedeem };
+module.exports = { autoRedeem, watchAndRedeem, cancelStuckTx };
