@@ -144,10 +144,13 @@ async function redeemViaProxy(wallet, proxyAddress, conditionBytes32, indexSets)
   ]);
 
   const proxy = new ethers.Contract(proxyAddress, PROXY_ABI, signer);
+  const nonce = await provider.getTransactionCount(wallet.address, "pending");
+  logger.info(`   Nonce: ${nonce}`);
   const tx = await proxy.execute(CTF_ADDRESS, 0, calldata, {
     gasLimit: 300_000,
-    maxPriorityFeePerGas: ethers.utils.parseUnits("80", "gwei"),  // acima do mínimo Polygon
-    maxFeePerGas:         ethers.utils.parseUnits("150", "gwei"), // alto o suficiente para não travar
+    nonce,
+    maxPriorityFeePerGas: ethers.utils.parseUnits("80", "gwei"),
+    maxFeePerGas:         ethers.utils.parseUnits("150", "gwei"),
   });
 
   logger.info(`   Tx enviada (via proxy): ${tx.hash}`);
@@ -167,6 +170,8 @@ async function redeemDirect(wallet, conditionBytes32, indexSets) {
   const signer   = wallet.connect(provider);
 
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, signer);
+  const nonce = await provider.getTransactionCount(wallet.address, "pending");
+  logger.info(`   Nonce: ${nonce}`);
   const tx  = await ctf.redeemPositions(
     USDC_ADDRESS,
     ethers.constants.HashZero,
@@ -174,8 +179,9 @@ async function redeemDirect(wallet, conditionBytes32, indexSets) {
     indexSets,
     {
       gasLimit: 300_000,
-      maxPriorityFeePerGas: ethers.utils.parseUnits("30", "gwei"),
-      maxFeePerGas:         ethers.utils.parseUnits("60", "gwei"),
+      nonce,
+      maxPriorityFeePerGas: ethers.utils.parseUnits("80", "gwei"),
+      maxFeePerGas:         ethers.utils.parseUnits("150", "gwei"),
     }
   );
 
