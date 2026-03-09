@@ -111,11 +111,11 @@ async function analyzeMarket(rawMarket) {
   // 2. Spread baixo é bom (invertido)
   const spreadScore = 1 - spread / CONFIG.MAX_SPREAD;   // 0 a 1
 
-  // 3. Tempo restante: preferimos entre 5 e 10 minutos (dados de adverse selection)
-  //    Score máximo no platô 300–600s, cai fora dessa faixa
-  //    Forma trapezoidal: sobe até 300s, plano até 600s, desce depois
-  const TIME_IDEAL_MIN = 5 * 60;   // 300s
-  const TIME_IDEAL_MAX = 10 * 60;  // 600s
+  // 3. Tempo restante: preferimos entre 7 e 12 minutos
+  //    Dados de adverse selection mostram que fills em 5–10min têm +16pp de win rate.
+  //    Como o fill ocorre ~2min após a seleção, selecionamos com 2min de antecedência.
+  const TIME_IDEAL_MIN = 7 * 60;   // 420s
+  const TIME_IDEAL_MAX = 12 * 60;  // 720s
   let timeScore;
   if (secondsToClose >= TIME_IDEAL_MIN && secondsToClose <= TIME_IDEAL_MAX) {
     timeScore = 1.0; // platô ótimo
