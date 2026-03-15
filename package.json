@@ -37,7 +37,9 @@
     "order:value": "node src/index.js --mode=order --strategy=value",
     "redeem": "node src/index.js --mode=redeem",
     "redeem:watch": "node src/index.js --mode=redeem --watch=300",
-    "stats:adverse": "node src/index.js --mode=stats --adverse"
+    "stats:adverse": "node src/index.js --mode=stats --adverse",
+    "order:strict": "node src/index.js --mode=order --strict",
+    "order:momentum:strict": "node src/index.js --mode=order --strategy=momentum --strict"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",

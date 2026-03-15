@@ -392,7 +392,40 @@ async function main() {
       // Estratégia pode recusar apostar (ex: momentum em zona neutra)
       if (!decision) {
         logger.warn(`⏭  Estratégia [${strategyName}] recusou apostar nesta janela — zona neutra.`);
+        stopVolatilityMonitor();
         process.exit(0);
+      }
+
+      // ── Quality Gate (só para mode=order) ────────────────
+      // Só prossegue se as duas condições ótimas forem satisfeitas simultaneamente:
+      //   1. price_delta (midUp − preço) entre 0.01 e 0.02
+      //   2. seconds_to_close entre 300s (5min) e 600s (10min)
+      // Dados de adverse selection mostram que fora dessas condições
+      // o win rate real cai abaixo do simulado de forma consistente.
+      if (mode === "order") {
+        const midpoint    = decision.outcome === "Up" ? best.midUp : best.midDown;
+        const estPrice    = midpoint - config.orderMargin;
+        const priceDelta  = midpoint - estPrice; // = config.orderMargin
+        const sec         = best.secondsToClose;
+
+        const deltaOk = priceDelta >= 0.01 && priceDelta <= 0.02;
+        const timeOk  = sec >= 300 && sec <= 600;
+
+        logger.info(`🔒 Quality Gate:`);
+        logger.info(`   price_delta : ${priceDelta.toFixed(3)} ${deltaOk ? "✅ (0.01–0.02)" : "❌ (fora da zona ótima)"}`);
+        logger.info(`   seconds     : ${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora da zona ótima)"}`);
+
+        if (!deltaOk || !timeOk) {
+          logger.warn(`⏭  Quality Gate: condições não ótimas — apostando mesmo assim (use --strict para bloquear).`);
+          // Por padrão avisa mas não bloqueia — use --strict para bloquear
+          if (args.includes("--strict")) {
+            logger.warn(`   Modo --strict: cancelando aposta.`);
+            stopVolatilityMonitor();
+            process.exit(0);
+          }
+        } else {
+          logger.success(`✅ Quality Gate passou — condições ótimas confirmadas.`);
+        }
       }
       // ─────────────────────────────────────────────────────
 
