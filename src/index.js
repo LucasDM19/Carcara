@@ -570,6 +570,12 @@ async function main() {
         const { printAdverseSelectionAnalysis } = require("./stats");
         printAdverseSelectionAnalysis();
       }
+      if (args.includes("--recent")) {
+        const { printRecentROI } = require("./stats");
+        const daysArg  = args.find(a => a.startsWith("--days="))?.split("=")[1];
+        const sinceArg = args.find(a => a.startsWith("--since="))?.split("=")[1];
+        printRecentROI(daysArg ? parseInt(daysArg) : null, sinceArg ?? null);
+      }
       break;
     }
 

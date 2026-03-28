@@ -509,4 +509,149 @@ function printAdverseSelectionAnalysis() {
   logger.divider();
 }
 
-module.exports = { printDashboard, printBacktestSummary, printStrategyBreakdown, printAdverseSelectionAnalysis };
+// ============================================================
+// ROI Recente — filtra apenas apostas após uma data de corte
+// Mostra o desempenho real do modo strict isolado do histórico
+// ============================================================
+function printRecentROI(sinceDaysAgo = null, sinceDate = null) {
+  const db = getDb();
+
+  // Data de corte: usa sinceDate se fornecida, senão calcula pelos dias
+  let cutoff;
+  if (sinceDate) {
+    cutoff = sinceDate;
+  } else if (sinceDaysAgo) {
+    const d = new Date();
+    d.setDate(d.getDate() - sinceDaysAgo);
+    cutoff = d.toISOString().slice(0, 10);
+  } else {
+    // Padrão: detecta automaticamente quando o quality gate foi ativado
+    // Usa a data do primeiro fill no bucket 5-10min com apostas a $6
+    const autoDate = db.prepare(`
+      SELECT DATE(created_at) as d FROM rounds
+      WHERE mode = 'order' AND order_status = 'MATCHED'
+        AND seconds_to_close >= 300 AND seconds_to_close <= 600
+        AND usdc_submitted >= 5.5
+      ORDER BY created_at ASC LIMIT 1
+    `).get();
+    cutoff = autoDate?.d ?? "2026-03-15";
+  }
+
+  logger.divider();
+  console.log(chalk.bold.yellow("  🦅 CARCARÁ — ROI Recente (modo strict)"));
+  console.log(chalk.gray(`  Apostas reais desde: ${cutoff} — exclui histórico pré-strict`));
+  logger.divider();
+
+  // ── Stats gerais do período ───────────────────────────────
+  const overall = db.prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN order_status='MATCHED' THEN 1 ELSE 0 END) as filled,
+      SUM(CASE WHEN order_status='MATCHED' AND resolved=1 AND won=1 THEN 1 ELSE 0 END) as wins,
+      SUM(CASE WHEN order_status='MATCHED' AND resolved=1 THEN 1 ELSE 0 END) as resolved,
+      SUM(CASE WHEN resolved=1 AND order_status='MATCHED' THEN profit ELSE 0 END) as profit,
+      SUM(CASE WHEN order_status='MATCHED' THEN usdc_submitted ELSE 0 END) as wagered
+    FROM rounds
+    WHERE mode = 'order'
+      AND DATE(created_at) >= ?
+  `).get(cutoff);
+
+  const wr  = overall.resolved ? (overall.wins / overall.resolved * 100) : 0;
+  const roi = overall.wagered  ? (overall.profit / overall.wagered * 100) : 0;
+  const wrColor = wr >= 55 ? chalk.green : wr >= 50 ? chalk.yellow : chalk.red;
+  const roiColor = roi >= 0 ? chalk.green : chalk.red;
+
+  console.log(`  Tentativas       : ${chalk.cyan(overall.total)}`);
+  console.log(`  Fills            : ${chalk.green(overall.filled)}  (${pct(overall.filled, overall.total)})`);
+  console.log(`  Resolvidos       : ${chalk.cyan(overall.resolved)}`);
+  console.log(`  Win rate         : ${wrColor((wr).toFixed(1) + "%")}`);
+  console.log(`  Total apostado   : ${chalk.cyan((overall.wagered || 0).toFixed(2))} USDC`);
+  console.log(`  Lucro            : ${signed(overall.profit)} USDC`);
+  console.log(`  ROI              : ${roiColor(signed(roi, 1) + "%")}`);
+
+  if (overall.resolved >= 20) {
+    const ev = (wr / 100) - (overall.wagered / overall.filled / (overall.resolved || 1) * 0 + 0.485);
+    console.log(chalk.gray(`  EV estimado/aposta: ${signed(ev * 100, 2)}%  (win_rate − avg_price)`));
+  }
+
+  // ── Por semana ───────────────────────────────────────────
+  console.log(chalk.bold("\n  Por semana:"));
+  console.log(chalk.gray("  " + "─".repeat(68)));
+  console.log(chalk.gray("  Semana          Fills  Resolvidos  WinRate   Lucro      ROI"));
+  console.log(chalk.gray("  " + "─".repeat(68)));
+
+  const weeks = db.prepare(`
+    SELECT
+      strftime('%Y-W%W', created_at) as week,
+      SUM(CASE WHEN order_status='MATCHED' THEN 1 ELSE 0 END) as filled,
+      SUM(CASE WHEN order_status='MATCHED' AND resolved=1 THEN 1 ELSE 0 END) as resolved,
+      SUM(CASE WHEN order_status='MATCHED' AND resolved=1 AND won=1 THEN 1 ELSE 0 END) as wins,
+      SUM(CASE WHEN order_status='MATCHED' AND resolved=1 THEN profit ELSE 0 END) as profit,
+      SUM(CASE WHEN order_status='MATCHED' THEN usdc_submitted ELSE 0 END) as wagered
+    FROM rounds
+    WHERE mode = 'order'
+      AND DATE(created_at) >= ?
+    GROUP BY week
+    ORDER BY week ASC
+  `).all(cutoff);
+
+  for (const w of weeks) {
+    const wwr  = w.resolved ? (w.wins / w.resolved * 100) : 0;
+    const wroi = w.wagered  ? (w.profit / w.wagered * 100) : 0;
+    const wwrColor  = wwr  >= 55 ? chalk.green : wwr  >= 50 ? chalk.yellow : chalk.red;
+    const wroiColor = wroi >= 0  ? chalk.green : chalk.red;
+    console.log(
+      `  ${w.week.padEnd(15)} ${String(w.filled).padEnd(6)} ${String(w.resolved).padEnd(11)} ` +
+      `${wwrColor((wwr).toFixed(1) + "%").padEnd(9)} ${signed(w.profit).padEnd(10)} ${wroiColor(signed(wroi, 1) + "%")}`
+    );
+  }
+
+  // ── Bucket ótimo isolado ─────────────────────────────────
+  console.log(chalk.bold("\n  Bucket ótimo: 5-10min + desconto 0.01-0.02:"));
+  console.log(chalk.gray("  " + "─".repeat(50)));
+
+  const optimal = db.prepare(`
+    SELECT
+      COUNT(*) as n,
+      SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) as wins,
+      SUM(profit) as profit,
+      SUM(usdc_submitted) as wagered,
+      AVG(price_submitted) as avg_price
+    FROM rounds
+    WHERE mode = 'order'
+      AND order_status = 'MATCHED'
+      AND resolved = 1
+      AND DATE(created_at) >= ?
+      AND seconds_to_close >= 300 AND seconds_to_close <= 600
+      AND (mid_up - price_submitted) >= 0.01 AND (mid_up - price_submitted) <= 0.02
+  `).get(cutoff);
+
+  if (optimal.n >= 3) {
+    const owr  = optimal.n ? (optimal.wins / optimal.n * 100) : 0;
+    const oroi = optimal.wagered ? (optimal.profit / optimal.wagered * 100) : 0;
+    const owrColor  = owr  >= 55 ? chalk.green : owr  >= 50 ? chalk.yellow : chalk.red;
+    const oroiColor = oroi >= 0  ? chalk.green : chalk.red;
+    console.log(`  Fills    : ${chalk.cyan(optimal.n)}`);
+    console.log(`  Win rate : ${owrColor((owr).toFixed(1) + "%")}`);
+    console.log(`  Lucro    : ${signed(optimal.profit)} USDC`);
+    console.log(`  ROI      : ${oroiColor(signed(oroi, 1) + "%")}`);
+    console.log(`  Avg preço: ${(optimal.avg_price || 0).toFixed(3)}`);
+
+    // Kelly sugerido
+    if (optimal.n >= 20) {
+      const p    = owr / 100;
+      const q    = 1 - p;
+      const b    = (1 / (optimal.avg_price || 0.485)) - 1;
+      const kelly = (p * b - q) / b;
+      console.log(chalk.gray(`
+  Kelly completo : ${(kelly * 100).toFixed(1)}% do bankroll`));
+      console.log(chalk.gray(`  Kelly 1/4      : ${(kelly * 0.25 * 100).toFixed(1)}% → sugestão de aposta`));
+    }
+  } else {
+    console.log(chalk.gray("  Dados insuficientes no bucket ótimo (<3 fills)."));
+  }
+
+  logger.divider();
+}
+
+module.exports = { printDashboard, printBacktestSummary, printStrategyBreakdown, printAdverseSelectionAnalysis, printRecentROI };
