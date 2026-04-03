@@ -396,6 +396,104 @@ async function main() {
         console.log(`  ${r.bucket.padEnd(10)} n=${String(r.n).padEnd(4)} wr=${r.wr}%  avg_price=${r.avg_price}  EV=${ev.toFixed(2)}%  profit=${r.profit}  ROI=${roi}%`);
       });
 
+      // 7. Simulado: win rate por condições — base para calibrar fills reais
+      console.log("\n7. Simulado (7k+ rounds): win rate por faixa de midUp:");
+      db.prepare(`
+        SELECT
+          CASE
+            WHEN mid_up < 0.44 THEN '< 44%'
+            WHEN mid_up < 0.47 THEN '44-47%'
+            WHEN mid_up < 0.50 THEN '47-50%'
+            WHEN mid_up < 0.53 THEN '50-53%'
+            WHEN mid_up < 0.56 THEN '53-56%'
+            ELSE '> 56%'
+          END as bucket,
+          COUNT(*) as n,
+          ROUND(AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr,
+          ROUND(AVG(CASE WHEN outcome='Down' AND won=1 THEN 1.0
+                         WHEN outcome='Down' THEN 0.0 END)*100,1) as wr_down,
+          ROUND(AVG(CASE WHEN outcome='Up' AND won=1 THEN 1.0
+                         WHEN outcome='Up' THEN 0.0 END)*100,1) as wr_up
+        FROM rounds
+        WHERE mode='sim' AND resolved=1
+        GROUP BY bucket
+        ORDER BY mid_up ASC
+      `).all().forEach(r =>
+        console.log(`  midUp=\${r.bucket.padEnd(8)} n=\${String(r.n).padEnd(5)} wr=\${r.wr}%  wr_down=\${r.wr_down ?? "—"}%  wr_up=\${r.wr_up ?? "—"}%`)
+      );
+
+      // 8. Simulado: win rate por orderbook — liquidez próxima
+      console.log("\n8. Simulado: win rate por liquidez no orderbook (top ask size):");
+      db.prepare(`
+        SELECT
+          CASE
+            WHEN obs.size IS NULL OR obs.size = 0 THEN 'sem ask'
+            WHEN obs.size < 100   THEN '< 100'
+            WHEN obs.size < 500   THEN '100-500'
+            WHEN obs.size < 2000  THEN '500-2k'
+            ELSE '> 2k'
+          END as liq_bucket,
+          COUNT(*) as n,
+          ROUND(AVG(CASE WHEN r.won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr,
+          ROUND(AVG(r.price_submitted),3) as avg_price
+        FROM rounds r
+        LEFT JOIN (
+          SELECT round_id, MIN(price) as best_ask, size
+          FROM orderbook_snapshots
+          WHERE side='asks'
+          GROUP BY round_id
+        ) obs ON obs.round_id = r.id
+        WHERE r.mode='sim' AND r.resolved=1
+        GROUP BY liq_bucket
+        ORDER BY CASE liq_bucket
+          WHEN 'sem ask' THEN 0 WHEN '< 100' THEN 1
+          WHEN '100-500' THEN 2 WHEN '500-2k' THEN 3 ELSE 4 END
+      `).all().forEach(r =>
+        console.log(`  ask_size=\${r.liq_bucket.padEnd(10)} n=\${String(r.n).padEnd(5)} wr=\${r.wr}%  avg_price=\${r.avg_price}`)
+      );
+
+      // 9. Fills reais vs simulado: comparação direta por midUp bucket
+      console.log("\n9. Fills reais vs simulado — win rate por faixa de midUp:");
+      console.log("  bucket     real_n  real_wr  sim_n   sim_wr   gap");
+      const buckets = [
+        ["< 44%",  0,    0.44],
+        ["44-47%", 0.44, 0.47],
+        ["47-50%", 0.47, 0.50],
+        ["50-53%", 0.50, 0.53],
+        ["53-56%", 0.53, 0.56],
+        ["> 56%",  0.56, 1.0 ],
+      ];
+      buckets.forEach(([label, lo, hi]) => {
+        const real = db.prepare(`
+          SELECT COUNT(*) as n,
+            ROUND(AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr
+          FROM rounds WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+            AND mid_up >= ? AND mid_up < ?
+        `).get(lo, hi);
+        const sim = db.prepare(`
+          SELECT COUNT(*) as n,
+            ROUND(AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr
+          FROM rounds WHERE mode='sim' AND resolved=1
+            AND mid_up >= ? AND mid_up < ?
+        `).get(lo, hi);
+        const gap = (real.n >= 3 && sim.n > 0)
+          ? ((real.wr - sim.wr) >= 0 ? "+" : "") + (real.wr - sim.wr).toFixed(1) + "pp"
+          : "—";
+        console.log(`  \${label.padEnd(10)} \${String(real.n).padEnd(7)} \${real.n>=3 ? real.wr+"%" : "—  "} \${String(sim.n).padEnd(7)} \${sim.wr ?? "—"}%  \${gap}`);
+      });
+
+      // 10. Fill rate real por midUp bucket — onde o AMM aceita nossas ordens
+      console.log("\n10. Fill rate real por faixa de midUp (onde ordens preenchem):");
+      buckets.forEach(([label, lo, hi]) => {
+        const r = db.prepare(`
+          SELECT COUNT(*) as tentativas,
+            SUM(CASE WHEN order_status='MATCHED' THEN 1 ELSE 0 END) as fills
+          FROM rounds WHERE mode='order' AND mid_up >= ? AND mid_up < ?
+        `).get(lo, hi);
+        const fr = r.tentativas ? (r.fills/r.tentativas*100).toFixed(1) : "0";
+        console.log(`  \${label.padEnd(10)} tentativas=\${String(r.tentativas).padEnd(5)} fills=\${r.fills}  fill_rate=\${fr}%`);
+      });
+
       console.log("\n=== FIM ===\n");
       break;
     }
