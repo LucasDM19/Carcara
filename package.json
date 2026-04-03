@@ -44,7 +44,9 @@
     "stats:recent:week": "node src/index.js --mode=stats --recent --days=7",
     "analyze": "node src/index.js --mode=analyze",
     "order:down:strict": "node src/index.js --mode=order --strategy=momentum-down --strict",
-    "sim:momentum-down": "node src/index.js --mode=sim --strategy=momentum-down"
+    "sim:momentum-down": "node src/index.js --mode=sim --strategy=momentum-down",
+    "sim:skew": "node src/index.js --mode=sim --strategy=skew",
+    "order:skew:strict": "node src/index.js --mode=order --strategy=skew --strict"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",

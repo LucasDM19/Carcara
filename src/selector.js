@@ -105,22 +105,24 @@ async function analyzeMarket(rawMarket) {
 
   // --- Cálculo de score ---
 
-  // 1. Proximidade de 50% (0 = perfeito equilíbrio, 1 = desequilíbrio máximo)
-  const balanceScore = 1 - Math.abs(midUp - 0.5) * 2;  // 0 a 1
+  // 1. Desequilíbrio do mercado — INVERTIDO vs versão original
+  //    Dados reais mostram: midUp < 44% → WR real 76.9%, midUp > 56% → WR real 77.8%
+  //    Mercados mais deslocados têm maior edge real → favorecemos desequilíbrio
+  //    Score = desvio absoluto de 50%, normalizado pelo máximo possível (30%)
+  const deviation = Math.abs(midUp - 0.5);          // 0 = equilibrado, 0.5 = máximo
+  const imbalanceScore = Math.min(deviation / 0.30, 1.0); // normalizado: 30% desvio = score 1.0
 
   // 2. Spread baixo é bom (invertido)
   const spreadScore = 1 - spread / CONFIG.MAX_SPREAD;   // 0 a 1
 
   // 3. Tempo restante: preferimos entre 7 e 12 minutos
-  //    Dados de adverse selection mostram que fills em 5–10min têm +16pp de win rate.
-  //    Como o fill ocorre ~2min após a seleção, selecionamos com 2min de antecedência.
   const TIME_IDEAL_MIN = 7 * 60;   // 420s
   const TIME_IDEAL_MAX = 12 * 60;  // 720s
   let timeScore;
   if (secondsToClose >= TIME_IDEAL_MIN && secondsToClose <= TIME_IDEAL_MAX) {
-    timeScore = 1.0; // platô ótimo
+    timeScore = 1.0;
   } else if (secondsToClose < TIME_IDEAL_MIN) {
-    timeScore = secondsToClose / TIME_IDEAL_MIN; // sobe linearmente até 300s
+    timeScore = secondsToClose / TIME_IDEAL_MIN;
   } else {
     timeScore = Math.max(0, 1 - (secondsToClose - TIME_IDEAL_MAX) / (CONFIG.MAX_SECONDS_TO_CLOSE - TIME_IDEAL_MAX));
   }
@@ -129,14 +131,17 @@ async function analyzeMarket(rawMarket) {
   const bestBidSize = parseFloat(bookUp.bids?.[0]?.size || 0);
   const bestAskSize = parseFloat(bookUp.asks?.[0]?.size || 0);
   const totalLiquidity = bestBidSize + bestAskSize;
-  const liquidityScore = Math.min(totalLiquidity / 20000, 1); // normalizado em 20k USDC
+  const liquidityScore = Math.min(totalLiquidity / 20000, 1);
 
-  // Score final ponderado
+  // Score final ponderado — imbalance agora é o critério principal
   const score =
-    balanceScore  * 0.40 +   // 40% — equilíbrio do mercado
-    spreadScore   * 0.30 +   // 30% — qualidade da liquidez
-    timeScore     * 0.20 +   // 20% — janela de tempo ideal
-    liquidityScore * 0.10;   // 10% — tamanho do livro
+    imbalanceScore * 0.45 +  // 45% — desequilíbrio do mercado (invertido)
+    spreadScore    * 0.25 +  // 25% — qualidade da liquidez
+    timeScore      * 0.25 +  // 25% — janela de tempo ideal
+    liquidityScore * 0.05;   // 5%  — tamanho do livro
+
+  // Alias para compatibilidade com logs existentes
+  const balanceScore = imbalanceScore;
 
   return {
     market,
