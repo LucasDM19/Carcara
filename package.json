@@ -41,7 +41,8 @@
     "order:strict": "node src/index.js --mode=order --strategy=dummy --strict",
     "order:momentum:strict": "node src/index.js --mode=order --strategy=momentum --strict",
     "stats:recent": "node src/index.js --mode=stats --recent",
-    "stats:recent:week": "node src/index.js --mode=stats --recent --days=7"
+    "stats:recent:week": "node src/index.js --mode=stats --recent --days=7",
+    "analyze": "node src/index.js --mode=analyze"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",
