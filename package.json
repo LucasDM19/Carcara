@@ -38,7 +38,7 @@
     "redeem": "node src/index.js --mode=redeem",
     "redeem:watch": "node src/index.js --mode=redeem --watch=300",
     "stats:adverse": "node src/index.js --mode=stats --adverse",
-    "order:strict": "node src/index.js --mode=order --strict",
+    "order:strict": "node src/index.js --mode=order --strategy=dummy --strict",
     "order:momentum:strict": "node src/index.js --mode=order --strategy=momentum --strict",
     "stats:recent": "node src/index.js --mode=stats --recent",
     "stats:recent:week": "node src/index.js --mode=stats --recent --days=7"

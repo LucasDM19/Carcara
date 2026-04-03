@@ -570,8 +570,17 @@ function printRecentROI(sinceDaysAgo = null, sinceDate = null) {
   console.log(`  ROI              : ${roiColor(signed(roi, 1) + "%")}`);
 
   if (overall.resolved >= 20) {
-    const ev = (wr / 100) - (overall.wagered / overall.filled / (overall.resolved || 1) * 0 + 0.485);
-    console.log(chalk.gray(`  EV estimado/aposta: ${signed(ev * 100, 2)}%  (win_rate − avg_price)`));
+    // Busca preço médio real pago nas apostas do período
+    const avgPriceRow = db.prepare(`
+      SELECT AVG(price_submitted) as avg_price
+      FROM rounds
+      WHERE mode = 'order' AND order_status = 'MATCHED' AND resolved = 1
+        AND DATE(created_at) >= ?
+    `).get(cutoff);
+    const avgPrice = avgPriceRow?.avg_price ?? 0.485;
+    const ev = (wr / 100) - avgPrice;
+    console.log(chalk.gray(`  Preço médio pago : ${avgPrice.toFixed(3)}`));
+    console.log(chalk.gray(`  EV estimado/aposta: ${signed(ev * 100, 2)}%  (win_rate − avg_price_real)`));
   }
 
   // ── Por semana ───────────────────────────────────────────
