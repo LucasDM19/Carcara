@@ -271,6 +271,29 @@ async function strategyValue(market, options = {}) {
 }
 
 // ============================================================
+// MOMENTUM-DOWN — aposta Down apenas quando midUp < threshold
+// ============================================================
+// Dados reais: 39 fills em 5-10min com WR=61.5% e ROI=+9.6%
+// Só aposta quando o mercado já está precificando Down acima de 51.5%
+// (midUp < 0.485 → midDown > 0.515)
+// ============================================================
+function strategyMomentumDown(market, options = {}) {
+  const threshold = options.threshold ?? 0.485; // midUp máximo para apostar Down
+  const { midUp, downToken } = market;
+
+  if (midUp >= threshold) {
+    return null; // mercado não favorece Down o suficiente
+  }
+
+  return {
+    side: "BUY",
+    outcome: "Down",
+    tokenId: downToken?.token_id,
+    rationale: `MomentumDown: midUp=${(midUp * 100).toFixed(1)}% < ${(threshold * 100).toFixed(1)}% → aposta Down`,
+  };
+}
+
+// ============================================================
 // Registry de estratégias
 // ============================================================
 const STRATEGIES = {
@@ -278,7 +301,8 @@ const STRATEGIES = {
   "up-only":    { fn: strategyUpOnly,     async: false },
   "down-only":  { fn: strategyDownOnly,   async: false },
   "momentum":   { fn: strategyMomentum,   async: false },
-  "contrarian": { fn: strategyContrarian, async: false },
+  "contrarian":      { fn: strategyContrarian,   async: false },
+  "momentum-down":   { fn: strategyMomentumDown,  async: false },
   "value":      { fn: strategyValue,      async: true  },
 };
 

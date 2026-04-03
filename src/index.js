@@ -536,21 +536,30 @@ async function main() {
       // Dados de adverse selection mostram que fora dessas condições
       // o win rate real cai abaixo do simulado de forma consistente.
       if (mode === "order") {
-        const midpoint    = decision.outcome === "Up" ? best.midUp : best.midDown;
-        const estPrice    = midpoint - config.orderMargin;
-        const priceDelta  = midpoint - estPrice; // = config.orderMargin
-        const sec         = best.secondsToClose;
+        const sec = best.secondsToClose;
+        const timeOk = sec >= 300 && sec <= 600;
 
-        const deltaOk = priceDelta >= 0.01 && priceDelta <= 0.02;
-        const timeOk  = sec >= 300 && sec <= 600;
+        // Para momentum-down: só aposta quando midUp < 0.485 (mercado favorece Down)
+        // Para outras estratégias: verifica price_delta
+        let condOk = true;
+        let condDesc = "";
 
-        logger.info(`🔒 Quality Gate:`);
-        logger.info(`   price_delta : ${priceDelta.toFixed(3)} ${deltaOk ? "✅ (0.01–0.02)" : "❌ (fora da zona ótima)"}`);
-        logger.info(`   seconds     : ${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora da zona ótima)"}`);
+        if (strategyName === "momentum-down") {
+          const midOk = best.midUp < 0.485;
+          condOk = midOk && timeOk;
+          condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (<48.5%)" : "❌ (≥48.5%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
+        } else {
+          const midpoint   = decision.outcome === "Up" ? best.midUp : best.midDown;
+          const priceDelta = midpoint - (midpoint - config.orderMargin);
+          const deltaOk    = priceDelta >= 0.01 && priceDelta <= 0.02;
+          condOk   = deltaOk && timeOk;
+          condDesc = `price_delta=${priceDelta.toFixed(3)} ${deltaOk ? "✅" : "❌"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
+        }
 
-        if (!deltaOk || !timeOk) {
+        logger.info(`🔒 Quality Gate: ${condDesc}`);
+
+        if (!condOk) {
           logger.warn(`⏭  Quality Gate: condições não ótimas — apostando mesmo assim (use --strict para bloquear).`);
-          // Por padrão avisa mas não bloqueia — use --strict para bloquear
           if (args.includes("--strict")) {
             logger.warn(`   Modo --strict: cancelando aposta.`);
             stopVolatilityMonitor();
