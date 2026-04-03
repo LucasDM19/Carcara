@@ -352,6 +352,50 @@ async function main() {
         console.log(`  delta=${r.delta}  n=${r.n}  wr=${r.wr}%  avg_price=${r.avg_price}  profit=${r.profit}`)
       );
 
+      // 5. Momentum por direção (Up vs Down)
+      console.log("\n5. Momentum por direção apostada:");
+      db.prepare(`
+        SELECT
+          outcome,
+          COUNT(*) as n,
+          ROUND(AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr,
+          ROUND(AVG(price_submitted),3) as avg_price,
+          ROUND(SUM(profit),2) as profit,
+          ROUND(SUM(usdc_submitted),2) as wagered,
+          ROUND(AVG(mid_up)*100,1) as avg_mid_up
+        FROM rounds
+        WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+          AND strategy='momentum'
+        GROUP BY outcome
+      `).all().forEach(r => {
+        const ev  = ((r.wr/100) - r.avg_price) * 100;
+        const roi = r.wagered ? (r.profit/r.wagered*100).toFixed(1) : "—";
+        console.log(`  ${r.outcome.padEnd(6)} n=${String(r.n).padEnd(4)} wr=${r.wr}%  avg_price=${r.avg_price}  avg_mid_up=${r.avg_mid_up}%  EV=${ev.toFixed(2)}%  profit=${r.profit}  ROI=${roi}%`);
+      });
+
+      // 6. Momentum Down em condições ótimas de tempo
+      console.log("\n6. Momentum Down por janela de tempo:");
+      db.prepare(`
+        SELECT
+          CASE WHEN seconds_to_close < 300  THEN '< 5min'
+               WHEN seconds_to_close < 600  THEN '5-10min'
+               ELSE '> 10min' END as bucket,
+          COUNT(*) as n,
+          ROUND(AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr,
+          ROUND(AVG(price_submitted),3) as avg_price,
+          ROUND(SUM(profit),2) as profit,
+          ROUND(SUM(usdc_submitted),2) as wagered
+        FROM rounds
+        WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+          AND strategy='momentum' AND outcome='Down'
+        GROUP BY bucket
+        ORDER BY CASE bucket WHEN '< 5min' THEN 1 WHEN '5-10min' THEN 2 ELSE 3 END
+      `).all().forEach(r => {
+        const ev  = ((r.wr/100) - r.avg_price) * 100;
+        const roi = r.wagered ? (r.profit/r.wagered*100).toFixed(1) : "—";
+        console.log(`  ${r.bucket.padEnd(10)} n=${String(r.n).padEnd(4)} wr=${r.wr}%  avg_price=${r.avg_price}  EV=${ev.toFixed(2)}%  profit=${r.profit}  ROI=${roi}%`);
+      });
+
       console.log("\n=== FIM ===\n");
       break;
     }
