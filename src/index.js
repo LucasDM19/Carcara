@@ -632,6 +632,10 @@ async function main() {
           const midOk = best.midUp < 0.44 || best.midUp > 0.56;
           condOk = midOk && timeOk;
           condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (<44% ou >56%)" : "❌ (zona neutra 44-56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
+        } else if (strategyName === "skew-up") {
+          const midOk = best.midUp > 0.56;
+          condOk = midOk && timeOk;
+          condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (>56%)" : "❌ (≤56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
         } else {
           const midpoint   = decision.outcome === "Up" ? best.midUp : best.midDown;
           const priceDelta = midpoint - (midpoint - config.orderMargin);

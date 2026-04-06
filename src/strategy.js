@@ -316,6 +316,22 @@ function strategySkew(market, options = {}) {
 }
 
 // ============================================================
+// SKEW-UP — aposta Up apenas quando midUp > 0.56
+// ============================================================
+// Dados reais: 57 fills, WR=73.7%, breakeven=69% → EV positivo
+// Lado Down (< 44%) no limite do breakeven — descartado por ora
+// ============================================================
+function strategySkewUp(market, options = {}) {
+  const hi = options.upperThreshold ?? 0.56;
+  const { midUp, upToken } = market;
+  if (midUp <= hi) return null;
+  return {
+    side: "BUY", outcome: "Up", tokenId: upToken?.token_id,
+    rationale: `SkewUp: midUp=${(midUp*100).toFixed(1)}% > ${(hi*100).toFixed(0)}% → WR real 73.7%`,
+  };
+}
+
+// ============================================================
 // Registry de estratégias
 // ============================================================
 const STRATEGIES = {
@@ -326,6 +342,7 @@ const STRATEGIES = {
   "contrarian":      { fn: strategyContrarian,   async: false },
   "momentum-down":   { fn: strategyMomentumDown,  async: false },
   "skew":            { fn: strategySkew,           async: false },
+  "skew-up":         { fn: strategySkewUp,         async: false },
   "value":      { fn: strategyValue,      async: true  },
 };
 

@@ -46,7 +46,9 @@
     "order:down:strict": "node src/index.js --mode=order --strategy=momentum-down --strict",
     "sim:momentum-down": "node src/index.js --mode=sim --strategy=momentum-down",
     "sim:skew": "node src/index.js --mode=sim --strategy=skew",
-    "order:skew:strict": "node src/index.js --mode=order --strategy=skew --strict"
+    "order:skew:strict": "node src/index.js --mode=order --strategy=skew --strict",
+    "order:skew-up:strict": "node src/index.js --mode=order --strategy=skew-up --strict",
+    "sim:skew-up": "node src/index.js --mode=sim --strategy=skew-up"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",
