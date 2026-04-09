@@ -545,6 +545,39 @@ async function main() {
           " n=" + String(r.n).padEnd(4) + " WR=" + r.wr + "%  profit=" + r.profit);
       });
 
+      // 13. Diagnóstico: rounds pendentes de resolução
+      console.log("\n13. Rounds pendentes de resolução (não resolvidos após end_date):");
+      db.prepare(`
+        SELECT
+          COUNT(*) as total_pendentes,
+          MIN(market_end_date) as mais_antigo,
+          MAX(market_end_date) as mais_recente,
+          SUM(CASE WHEN mode='order' AND order_status='MATCHED' THEN 1 ELSE 0 END) as apostas_reais_pendentes
+        FROM rounds
+        WHERE resolved=0
+          AND order_status IN ('MATCHED','DRY')
+          AND datetime(market_end_date) < datetime('now')
+      `).all().forEach(function(r) {
+        console.log("  Total pendentes    : " + r.total_pendentes);
+        console.log("  Mais antigo        : " + r.mais_antigo);
+        console.log("  Mais recente       : " + r.mais_recente);
+        console.log("  Apostas reais pend.: " + r.apostas_reais_pendentes);
+      });
+
+      // 14. Diagnóstico: shares anômalas nas apostas reais recentes
+      console.log("\n14. Últimas 20 apostas reais — shares e usdc para detectar anomalias:");
+      console.log("  id      data                outcome  shares    usdc   price  status");
+      db.prepare(`
+        SELECT id, created_at, outcome, shares_matched, usdc_submitted, price_submitted, order_status
+        FROM rounds
+        WHERE mode='order'
+        ORDER BY id DESC LIMIT 20
+      `).all().forEach(function(r) {
+        console.log("  " + String(r.id).padEnd(7) + r.created_at.slice(0,16).padEnd(17) +
+          (r.outcome||"—").padEnd(8) + String(r.shares_matched||0).padEnd(10) +
+          String(r.usdc_submitted||0).padEnd(7) + String(r.price_submitted||0).padEnd(7) + r.order_status);
+      });
+
       console.log("\n=== FIM ===\n");
       break;
     }
