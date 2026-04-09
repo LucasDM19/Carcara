@@ -133,6 +133,46 @@ function classifyLevel(speed, stddev, amplitude) {
   return { level: "CALM", reason: "Mercado estável" };
 }
 
+function calcTrend(ticks) {
+  // Calcula a tendência do BTC nos últimos 5, 15 e 30 minutos
+  // Retorna objeto com variação em USD e classificação direcional
+  const now = Date.now();
+  const getPrice = (msAgo) => {
+    const cutoff = now - msAgo;
+    const old = [...ticks].reverse().find(t => t.timestamp <= cutoff);
+    return old ? old.price : null;
+  };
+
+  const p5  = getPrice(5 * 60_000);
+  const p15 = getPrice(15 * 60_000);
+  const p30 = getPrice(30 * 60_000);
+  const cur = ticks.length ? ticks[ticks.length - 1].price : null;
+
+  const delta5  = (cur && p5)  ? cur - p5  : null;
+  const delta15 = (cur && p15) ? cur - p15 : null;
+  const delta30 = (cur && p30) ? cur - p30 : null;
+
+  // Classificação: forte_alta / alta / lateral / queda / forte_queda
+  const classify = (delta, ref) => {
+    if (!delta || !ref) return "desconhecido";
+    const pct = delta / ref;
+    if (pct >  0.005) return "forte_alta";
+    if (pct >  0.001) return "alta";
+    if (pct > -0.001) return "lateral";
+    if (pct > -0.005) return "queda";
+    return "forte_queda";
+  };
+
+  return {
+    delta5,
+    delta15,
+    delta30,
+    trend5:  classify(delta5,  p5),
+    trend15: classify(delta15, p15),
+    trend30: classify(delta30, p30),
+  };
+}
+
 function updateState(price) {
   const now = Date.now();
 
@@ -146,8 +186,9 @@ function updateState(price) {
   const stddev = calcStdDev(ticks);
   const amplitude = calcAmplitude(ticks);
   const { level, reason } = classifyLevel(speed, stddev, amplitude);
+  const trend = calcTrend(ticks);
 
-  currentState = { level, price, speed, stddev, amplitude, reason, updatedAt: now };
+  currentState = { level, price, speed, stddev, amplitude, reason, updatedAt: now, trend };
 
   // Reset do timer de staleness
   if (staleTimer) clearTimeout(staleTimer);

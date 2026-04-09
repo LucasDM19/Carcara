@@ -196,6 +196,12 @@ async function main() {
             vol_stddev: volState.stddev,
             vol_amplitude: volState.amplitude,
             btc_price: volState.price,
+            btc_trend_5m:  volState.trend?.trend5  ?? null,
+            btc_trend_15m: volState.trend?.trend15 ?? null,
+            btc_trend_30m: volState.trend?.trend30 ?? null,
+            btc_delta_5m:  volState.trend?.delta5  ?? null,
+            btc_delta_15m: volState.trend?.delta15 ?? null,
+            btc_delta_30m: volState.trend?.delta30 ?? null,
           });
 
           insertOrderbookSnapshot(roundId, decision.tokenId, book);
@@ -476,6 +482,69 @@ async function main() {
         console.log("  " + label.padEnd(12) + "tentativas=" + String(r.tentativas).padEnd(5) + " fills=" + r.fills + "  fill_rate=" + fr + "%");
       });
 
+      // 11. WR real nas faixas extremas por vol_speed e vol_level
+      console.log("\n11. WR real (faixas extremas < 44% e > 56%) por volatilidade:");
+      console.log("  vol_level   vol_speed_bucket  n    WR      avg_price  profit");
+      db.prepare(`
+        SELECT
+          vol_level,
+          CASE
+            WHEN vol_speed < 0.1  THEN 'calmo    '
+            WHEN vol_speed < 0.3  THEN 'moderado '
+            WHEN vol_speed < 0.6  THEN 'agitado  '
+            ELSE                       'extremo  '
+          END as speed_bucket,
+          COUNT(*) as n,
+          ROUND(AVG(CASE WHEN won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr,
+          ROUND(AVG(price_submitted),3) as avg_price,
+          ROUND(SUM(profit),2) as profit
+        FROM rounds
+        WHERE mode='order' AND order_status='MATCHED' AND resolved=1
+          AND (mid_up < 0.44 OR mid_up > 0.56)
+        GROUP BY vol_level, speed_bucket
+        HAVING n >= 3
+        ORDER BY vol_level, vol_speed
+      `).all().forEach(function(r) {
+        const ev = ((r.wr/100) - r.avg_price)*100;
+        console.log("  " + (r.vol_level||"—").padEnd(11) + r.speed_bucket + "  n=" +
+          String(r.n).padEnd(4) + " WR=" + r.wr + "%  avg_price=" + r.avg_price +
+          "  EV=" + (ev>=0?"+":"") + ev.toFixed(1) + "%  profit=" + r.profit);
+      });
+
+      // 12. WR real nas faixas extremas por btc_price movement
+      // Compara btc_price do round com o round anterior para estimar direção
+      console.log("\n12. WR real nas faixas extremas por direção do BTC (proxy via btc_price consecutivo):");
+      console.log("  (positivo = BTC subindo, negativo = BTC caindo no momento da aposta)");
+      db.prepare(`
+        SELECT
+          CASE
+            WHEN (r.btc_price - prev.btc_price) > 200  THEN 'subindo forte  '
+            WHEN (r.btc_price - prev.btc_price) > 50   THEN 'subindo        '
+            WHEN (r.btc_price - prev.btc_price) > -50  THEN 'lateral        '
+            WHEN (r.btc_price - prev.btc_price) > -200 THEN 'caindo         '
+            ELSE                                             'caindo forte   '
+          END as trend,
+          r.outcome,
+          COUNT(*) as n,
+          ROUND(AVG(CASE WHEN r.won=1 THEN 1.0 ELSE 0.0 END)*100,1) as wr,
+          ROUND(SUM(r.profit),2) as profit
+        FROM rounds r
+        JOIN rounds prev ON prev.id = (
+          SELECT id FROM rounds
+          WHERE mode=r.mode AND id < r.id AND btc_price IS NOT NULL
+          ORDER BY id DESC LIMIT 1
+        )
+        WHERE r.mode='order' AND r.order_status='MATCHED' AND r.resolved=1
+          AND (r.mid_up < 0.44 OR r.mid_up > 0.56)
+          AND r.btc_price IS NOT NULL AND prev.btc_price IS NOT NULL
+        GROUP BY trend, r.outcome
+        HAVING n >= 3
+        ORDER BY trend, r.outcome
+      `).all().forEach(function(r) {
+        console.log("  " + r.trend + " outcome=" + r.outcome.padEnd(5) +
+          " n=" + String(r.n).padEnd(4) + " WR=" + r.wr + "%  profit=" + r.profit);
+      });
+
       console.log("\n=== FIM ===\n");
       break;
     }
@@ -711,7 +780,13 @@ async function main() {
         vol_speed: volState.speed ?? null,
         vol_stddev: volState.stddev ?? null,
         vol_amplitude: volState.amplitude ?? null,
-        btc_price: volState.price ?? null,
+            btc_price: volState.price ?? null,
+            btc_trend_5m:  volState.trend?.trend5  ?? null,
+            btc_trend_15m: volState.trend?.trend15 ?? null,
+            btc_trend_30m: volState.trend?.trend30 ?? null,
+            btc_delta_5m:  volState.trend?.delta5  ?? null,
+            btc_delta_15m: volState.trend?.delta15 ?? null,
+            btc_delta_30m: volState.trend?.delta30 ?? null,
       });
 
       // Salva o orderbook capturado
@@ -772,6 +847,12 @@ async function main() {
         vol_level: volState.level, vol_speed: volState.speed,
         vol_stddev: volState.stddev, vol_amplitude: volState.amplitude,
         btc_price: volState.price,
+        btc_trend_5m:  volState.trend?.trend5  ?? null,
+        btc_trend_15m: volState.trend?.trend15 ?? null,
+        btc_trend_30m: volState.trend?.trend30 ?? null,
+        btc_delta_5m:  volState.trend?.delta5  ?? null,
+        btc_delta_15m: volState.trend?.delta15 ?? null,
+        btc_delta_30m: volState.trend?.delta30 ?? null,
       });
 
       insertOrderbookSnapshot(roundId, best.upToken.token_id, book);

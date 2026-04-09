@@ -37,6 +37,7 @@ function getDb() {
   _db.pragma("foreign_keys = ON");
 
   initSchema(_db);
+  migrateSchema(_db);
   logger.success(`📦 Banco de dados: ${DB_PATH}`);
   return _db;
 }
@@ -90,6 +91,14 @@ function initSchema(db) {
       vol_stddev        REAL,
       vol_amplitude     REAL,
       btc_price         REAL,
+
+      -- Tendência do BTC no momento da aposta (adicionado Fase 7)
+      btc_trend_5m      TEXT,           -- forte_alta | alta | lateral | queda | forte_queda
+      btc_trend_15m     TEXT,
+      btc_trend_30m     TEXT,
+      btc_delta_5m      REAL,           -- variação em USD nos últimos 5/15/30 min
+      btc_delta_15m     REAL,
+      btc_delta_30m     REAL,
 
       -- Resultado final (preenchido pelo --mode=resolve)
       resolved          INTEGER DEFAULT 0,
@@ -145,14 +154,18 @@ function insertRound(data) {
       side, token_id, outcome, price_submitted, shares_submitted,
       usdc_submitted, wait_ms, margin_used,
       order_id, order_status, shares_matched, taker_fill, cancelled_immediately,
-      vol_level, vol_speed, vol_stddev, vol_amplitude, btc_price
+      vol_level, vol_speed, vol_stddev, vol_amplitude, btc_price,
+      btc_trend_5m, btc_trend_15m, btc_trend_30m,
+      btc_delta_5m, btc_delta_15m, btc_delta_30m
     ) VALUES (
       @mode, @strategy, @condition_id, @market_name, @market_end_date,
       @seconds_to_close, @market_score, @mid_up, @mid_down, @spread,
       @side, @token_id, @outcome, @price_submitted, @shares_submitted,
       @usdc_submitted, @wait_ms, @margin_used,
       @order_id, @order_status, @shares_matched, @taker_fill, @cancelled_immediately,
-      @vol_level, @vol_speed, @vol_stddev, @vol_amplitude, @btc_price
+      @vol_level, @vol_speed, @vol_stddev, @vol_amplitude, @btc_price,
+      @btc_trend_5m, @btc_trend_15m, @btc_trend_30m,
+      @btc_delta_5m, @btc_delta_15m, @btc_delta_30m
     )
   `);
   const result = stmt.run(data);
@@ -204,6 +217,26 @@ function insertVolatilitySnapshot(state) {
     vol_stddev: state.stddev,
     vol_amplitude: state.amplitude,
   });
+}
+
+// ============================================================
+// Migração incremental — adiciona colunas novas sem recriar tabela
+// ============================================================
+function migrateSchema(db) {
+  const newCols = [
+    ["btc_trend_5m",  "TEXT"],
+    ["btc_trend_15m", "TEXT"],
+    ["btc_trend_30m", "TEXT"],
+    ["btc_delta_5m",  "REAL"],
+    ["btc_delta_15m", "REAL"],
+    ["btc_delta_30m", "REAL"],
+    ["redeemed",      "INTEGER DEFAULT 0"],
+  ];
+  for (const [col, type] of newCols) {
+    try {
+      db.exec(`ALTER TABLE rounds ADD COLUMN ${col} ${type}`);
+    } catch { /* coluna já existe */ }
+  }
 }
 
 // ============================================================
