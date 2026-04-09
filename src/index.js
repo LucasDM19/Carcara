@@ -702,9 +702,15 @@ async function main() {
           condOk = midOk && timeOk;
           condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (<44% ou >56%)" : "❌ (zona neutra 44-56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
         } else if (strategyName === "skew-up") {
-          const midOk = best.midUp > 0.56;
-          condOk = midOk && timeOk;
-          condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (>56%)" : "❌ (≤56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
+          const midOk  = best.midUp > 0.56;
+          // Filtro de tendência baseado em dados:
+          // caindo forte + Up → WR=33.3% (n=9) — eliminar
+          // lateral + Up     → WR=79.3% (n=29) — preservar
+          const _volState  = getVolatilityState();
+          const trend5     = _volState.trend?.trend5 ?? "desconhecido";
+          const trendOk    = trend5 !== "forte_queda";
+          condOk  = midOk && timeOk && trendOk;
+          condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (>56%)" : "❌ (≤56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"} | trend5=${trend5} ${trendOk ? "✅" : "❌ (forte_queda — bloqueado)"}`;
         } else {
           const midpoint   = decision.outcome === "Up" ? best.midUp : best.midDown;
           const priceDelta = midpoint - (midpoint - config.orderMargin);
