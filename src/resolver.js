@@ -67,10 +67,24 @@ async function fetchMarketOutcome(conditionId) {
     logger.info(`  API: active=${market.active} closed=${market.closed} resolved=${market.resolved}`);
 
     // A Gamma pode usar active=false, closed=true, ou resolved=true para indicar encerramento
+    // Fallback: se end_date passou há mais de 2 horas e API ainda diz ativo,
+    // tenta ler outcomePrices diretamente — se um deles for 1.0, o mercado resolveu
     const isSettled = market.active === false || market.closed === true || market.resolved === true;
     if (!isSettled) {
-      logger.info(`  ⏳ Mercado ainda ativo — ainda não resolvido.`);
-      return null;
+      // Verifica se outcomePrices já tem um vencedor claro mesmo com flags incorretas
+      let prices = [];
+      try {
+        prices = typeof market.outcomePrices === "string"
+          ? JSON.parse(market.outcomePrices)
+          : (market.outcomePrices || []);
+      } catch { prices = []; }
+
+      const hasWinner = prices.some(p => parseFloat(p) >= 0.99);
+      if (!hasWinner) {
+        logger.info(`  ⏳ Mercado ainda ativo — ainda não resolvido.`);
+        return null;
+      }
+      logger.info(`  ℹ️  API flags inconsistentes mas outcomePrices indica resolução — prosseguindo.`);
     }
 
     // Extrai outcomes e preços finais

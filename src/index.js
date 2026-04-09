@@ -564,6 +564,19 @@ async function main() {
         console.log("  Apostas reais pend.: " + r.apostas_reais_pendentes);
       });
 
+      // 13b. Diagnóstico: detalhes dos erros recentes
+      console.log("\n13b. Últimos erros nas apostas reais:");
+      db.prepare(`
+        SELECT id, created_at, market_name, price_submitted, usdc_submitted
+        FROM rounds
+        WHERE mode='order' AND order_status='ERROR'
+        ORDER BY id DESC LIMIT 10
+      `).all().forEach(function(r) {
+        console.log("  #" + r.id + " " + (r.created_at||"").slice(0,16) +
+          " price=" + r.price_submitted + " usdc=" + r.usdc_submitted +
+          " mkt=" + (r.market_name||"").slice(0,35));
+      });
+
       // 14. Diagnóstico: shares anômalas nas apostas reais recentes
       console.log("\n14. Últimas 20 apostas reais — shares e usdc para detectar anomalias:");
       console.log("  id      data                outcome  shares    usdc   price  status");
