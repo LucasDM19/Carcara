@@ -777,6 +777,20 @@ async function main() {
         } else {
           logger.success(`✅ Quality Gate passou — condições ótimas confirmadas.`);
         }
+
+        // Verifica shares mínimas — CLOB rejeita ordens abaixo de 5 shares
+        // Evita ERRORs desnecessários quando preço alto + aposta pequena
+        const _midForShares = decision.outcome === "Up" ? best.midUp : best.midDown;
+        const _estPrice     = Math.max(_midForShares - config.orderMargin, 0.01);
+        const _estShares    = config.maxBetSizeUsdc / _estPrice;
+        const MIN_SHARES    = 5;
+        if (_estShares < MIN_SHARES) {
+          logger.warn(`⏭  Shares estimadas (${_estShares.toFixed(2)}) abaixo do mínimo (${MIN_SHARES}) — cancelando para evitar ERROR.`);
+          logger.warn(`   Aumente MAX_BET_SIZE_USDC ou aguarde preço mais baixo.`);
+          stopVolatilityMonitor();
+          process.exit(0);
+        }
+        logger.info(`   Shares estimadas: ${_estShares.toFixed(2)} ✅`);
       }
       // ─────────────────────────────────────────────────────
 

@@ -46,14 +46,48 @@ function getPendingRounds() {
 // ============================================================
 async function fetchMarketOutcome(conditionId) {
   try {
-    // Tenta os dois formatos de query que a Gamma aceita
+    // Tenta múltiplos formatos de query e endpoints
     let markets = null;
-    for (const param of [`condition_ids=${conditionId}`, `conditionId=${conditionId}`]) {
-      const res = await axios.get(`${GAMMA_HOST}/markets?${param}`, { timeout: 10_000 });
-      if (Array.isArray(res.data) && res.data.length > 0) {
-        markets = res.data;
-        break;
-      }
+    const queries = [
+      `${GAMMA_HOST}/markets?condition_ids=${conditionId}`,
+      `${GAMMA_HOST}/markets?conditionId=${conditionId}`,
+      `${GAMMA_HOST}/events?condition_ids=${conditionId}`,
+    ];
+
+    for (const url of queries) {
+      try {
+        const res = await axios.get(url, { timeout: 10_000 });
+        const data = res.data;
+        // Pode retornar array de markets ou array de events com markets dentro
+        if (Array.isArray(data) && data.length > 0) {
+          // Events têm markets aninhados
+          if (data[0].markets) {
+            const nested = data.flatMap(e => e.markets || [])
+              .filter(m => m.conditionId === conditionId || m.condition_id === conditionId);
+            if (nested.length > 0) { markets = nested; break; }
+          } else {
+            markets = data; break;
+          }
+        }
+      } catch { /* tenta próximo */ }
+    }
+
+    // Fallback: Data API da Polymarket
+    if (!markets) {
+      try {
+        const res = await axios.get(
+          `https://data-api.polymarket.com/positions?market=${conditionId}`,
+          { timeout: 10_000 }
+        );
+        if (Array.isArray(res.data) && res.data.length > 0) {
+          // Data API retorna posições — se outcome_price = 1, esse outcome ganhou
+          const settled = res.data.find(p => parseFloat(p.curPrice || p.outcomePrice || 0) >= 0.99);
+          if (settled) {
+            logger.info(`  Resolver via Data API: vencedor = ${settled.outcome || settled.title}`);
+            return settled.outcome || settled.title;
+          }
+        }
+      } catch { /* Data API indisponível */ }
     }
 
     if (!markets) {
