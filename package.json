@@ -48,7 +48,8 @@
     "sim:skew": "node src/index.js --mode=sim --strategy=skew",
     "order:skew:strict": "node src/index.js --mode=order --strategy=skew --strict",
     "order:skew-up:strict": "node src/index.js --mode=order --strategy=skew-up --strict",
-    "sim:skew-up": "node src/index.js --mode=sim --strategy=skew-up"
+    "sim:skew-up": "node src/index.js --mode=sim --strategy=skew-up",
+    "resolve:debug": "node src/index.js --mode=resolve:debug"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.0.0",

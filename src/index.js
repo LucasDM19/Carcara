@@ -945,6 +945,27 @@ async function main() {
     // -------------------------------------------------------
     // RESOLVE: Auto-resolução via Gamma API
     // -------------------------------------------------------
+    case "resolve:debug": {
+      const { getDb } = require("./db");
+      const db = getDb();
+      // Mostra os primeiros 5 rounds pendentes com detalhes para diagnóstico
+      const pending = db.prepare(`
+        SELECT id, condition_id, market_name, market_end_date, outcome, order_status
+        FROM rounds
+        WHERE resolved=0
+          AND order_status IN ('MATCHED','DRY')
+          AND datetime(market_end_date) < datetime('now')
+        ORDER BY market_end_date ASC LIMIT 5
+      `).all();
+      console.log("Rounds pendentes para resolver (primeiros 5):");
+      pending.forEach(r => {
+        console.log("  #" + r.id + " | " + r.market_end_date + " | " + r.outcome + " | " + r.order_status);
+        console.log("    condition_id: " + r.condition_id);
+        console.log("    mercado: " + (r.market_name||"").slice(0,50));
+      });
+      break;
+    }
+
     case "resolve": {
       const { autoResolve, watchAndResolve } = require("./resolver");
       const watchArg = args.find(a => a.startsWith("--watch="))?.split("=")[1];
