@@ -30,7 +30,7 @@ function getPendingRounds() {
   const db = getDb();
   return db.prepare(`
     SELECT id, condition_id, market_name, market_end_date,
-           outcome, shares_matched, usdc_submitted, order_status
+           outcome, shares_matched, usdc_submitted, order_status, token_id
     FROM rounds
     WHERE resolved = 0
       AND order_status IN ('MATCHED', 'DRY')
@@ -44,50 +44,51 @@ function getPendingRounds() {
 // Consulta a Gamma API para descobrir o vencedor do mercado
 // Retorna: "Up" | "Down" | null (ainda não resolvido)
 // ============================================================
-async function fetchMarketOutcome(conditionId) {
+async function fetchMarketOutcome(conditionId, tokenId = null) {
   try {
-    // Tenta múltiplos formatos de query e endpoints
+    // ── Método 1: CLOB API via token_id (mais confiável) ────
+    // Se temos o token_id, verificamos o preço atual do token
+    // Preço ≈ 0 → token perdeu; Preço ≈ 1 → token ganhou
+    if (tokenId) {
+      try {
+        const clobRes = await axios.get(
+          `https://clob.polymarket.com/price?token_id=${tokenId}&side=BUY`,
+          { timeout: 8_000 }
+        );
+        const price = parseFloat(clobRes.data?.price ?? clobRes.data?.mid ?? -1);
+        logger.info(`  CLOB price para token ${tokenId.slice(0,12)}...: ${price}`);
+
+        if (price >= 0.98) {
+          // Token Up ou Down está valendo quase 1 → é o vencedor
+          // Precisamos saber qual outcome esse token representa
+          // Isso é determinado pelo banco — se outcome='Up' e price≈1 → Up ganhou
+          return "TOKEN_WIN"; // sinal especial — caller resolve pelo outcome do round
+        }
+        if (price <= 0.02) {
+          return "TOKEN_LOSE"; // token perdeu
+        }
+        // Preço intermediário → ainda não resolveu
+        logger.info(`  CLOB: preço intermediário (${price}) — mercado ainda não resolveu`);
+        return null;
+      } catch (clobErr) {
+        logger.info(`  CLOB indisponível: ${clobErr.message} — tentando Gamma...`);
+      }
+    }
+
+    // ── Método 2: Gamma API (múltiplos endpoints) ────────────
     let markets = null;
     const queries = [
       `${GAMMA_HOST}/markets?condition_ids=${conditionId}`,
       `${GAMMA_HOST}/markets?conditionId=${conditionId}`,
-      `${GAMMA_HOST}/events?condition_ids=${conditionId}`,
     ];
 
     for (const url of queries) {
       try {
         const res = await axios.get(url, { timeout: 10_000 });
-        const data = res.data;
-        // Pode retornar array de markets ou array de events com markets dentro
-        if (Array.isArray(data) && data.length > 0) {
-          // Events têm markets aninhados
-          if (data[0].markets) {
-            const nested = data.flatMap(e => e.markets || [])
-              .filter(m => m.conditionId === conditionId || m.condition_id === conditionId);
-            if (nested.length > 0) { markets = nested; break; }
-          } else {
-            markets = data; break;
-          }
+        if (Array.isArray(res.data) && res.data.length > 0) {
+          markets = res.data; break;
         }
       } catch { /* tenta próximo */ }
-    }
-
-    // Fallback: Data API da Polymarket
-    if (!markets) {
-      try {
-        const res = await axios.get(
-          `https://data-api.polymarket.com/positions?market=${conditionId}`,
-          { timeout: 10_000 }
-        );
-        if (Array.isArray(res.data) && res.data.length > 0) {
-          // Data API retorna posições — se outcome_price = 1, esse outcome ganhou
-          const settled = res.data.find(p => parseFloat(p.curPrice || p.outcomePrice || 0) >= 0.99);
-          if (settled) {
-            logger.info(`  Resolver via Data API: vencedor = ${settled.outcome || settled.title}`);
-            return settled.outcome || settled.title;
-          }
-        }
-      } catch { /* Data API indisponível */ }
     }
 
     if (!markets) {
@@ -96,44 +97,30 @@ async function fetchMarketOutcome(conditionId) {
     }
 
     const market = markets[0];
-
-    // Debug: mostra estado do mercado
     logger.info(`  API: active=${market.active} closed=${market.closed} resolved=${market.resolved}`);
 
-    // A Gamma pode usar active=false, closed=true, ou resolved=true para indicar encerramento
-    // Fallback: se end_date passou há mais de 2 horas e API ainda diz ativo,
-    // tenta ler outcomePrices diretamente — se um deles for 1.0, o mercado resolveu
     const isSettled = market.active === false || market.closed === true || market.resolved === true;
-    if (!isSettled) {
-      // Verifica se outcomePrices já tem um vencedor claro mesmo com flags incorretas
-      let prices = [];
-      try {
-        prices = typeof market.outcomePrices === "string"
-          ? JSON.parse(market.outcomePrices)
-          : (market.outcomePrices || []);
-      } catch { prices = []; }
 
-      const hasWinner = prices.some(p => parseFloat(p) >= 0.99);
-      if (!hasWinner) {
-        logger.info(`  ⏳ Mercado ainda ativo — ainda não resolvido.`);
-        return null;
-      }
-      logger.info(`  ℹ️  API flags inconsistentes mas outcomePrices indica resolução — prosseguindo.`);
+    let prices = [];
+    try {
+      prices = typeof market.outcomePrices === "string"
+        ? JSON.parse(market.outcomePrices)
+        : (market.outcomePrices || []);
+    } catch { prices = []; }
+
+    const hasWinner = prices.some(p => parseFloat(p) >= 0.99);
+
+    if (!isSettled && !hasWinner) {
+      logger.info(`  ⏳ Mercado ainda ativo — ainda não resolvido.`);
+      return null;
     }
 
-    // Extrai outcomes e preços finais
-    let outcomes, prices;
+    let outcomes = [];
     try {
       outcomes = typeof market.outcomes === "string"
         ? JSON.parse(market.outcomes)
         : (market.outcomes || []);
-      prices = typeof market.outcomePrices === "string"
-        ? JSON.parse(market.outcomePrices)
-        : (market.outcomePrices || []);
-    } catch {
-      logger.warn(`  Resolver: erro ao parsear outcomes/prices`);
-      return null;
-    }
+    } catch { outcomes = []; }
 
     logger.info(`  Outcomes: ${JSON.stringify(outcomes)} | Prices: ${JSON.stringify(prices)}`);
 
@@ -142,47 +129,20 @@ async function fetchMarketOutcome(conditionId) {
       return null;
     }
 
-    // O vencedor tem preço final próximo de 1.0
     const winnerIdx = prices.findIndex(p => parseFloat(p) >= 0.99);
     if (winnerIdx === -1) {
       logger.warn(`  Resolver: nenhum vencedor claro ainda (prices: ${prices})`);
       return null;
     }
 
-    return outcomes[winnerIdx]; // "Up" ou "Down"
+    return outcomes[winnerIdx];
   } catch (err) {
     logger.warn(`Resolver: erro ao consultar mercado ${conditionId}: ${err.message}`);
     return null;
   }
 }
 
-// ============================================================
-// Resolve um round com base no outcome vencedor
-// ============================================================
-function resolveRoundWithOutcome(round, winnerOutcome) {
-  const won = round.outcome === winnerOutcome;
-  // Payout: se ganhou, cada share vira 1 USDC
-  const payout = won ? (round.shares_matched || 0) * 1.0 : 0;
 
-  resolveRound(round.id, { won, payout });
-
-  const profit = won
-    ? payout - (round.usdc_submitted || 0)
-    : -(round.usdc_submitted || 0);
-
-  const icon = won ? "✅" : "❌";
-  logger.info(
-    `${icon} Round #${round.id} — ${round.market_name?.slice(-25)} — ` +
-    `Apostou: ${round.outcome} | Venceu: ${winnerOutcome} | ` +
-    `Profit: ${profit >= 0 ? "+" : ""}${profit.toFixed(2)} USDC`
-  );
-
-  return { won, payout, profit };
-}
-
-// ============================================================
-// Roda a resolução automática em todos os pendentes
-// ============================================================
 async function autoResolve() {
   const pending = getPendingRounds();
 
@@ -202,7 +162,7 @@ async function autoResolve() {
     logger.info(`  End date  : ${round.market_end_date}`);
     logger.info(`  Apostou   : ${round.outcome} | ${round.shares_matched} shares`);
 
-    const winner = await fetchMarketOutcome(round.condition_id);
+    const winner = await fetchMarketOutcome(round.condition_id, round.token_id);
 
     if (!winner) {
       logger.warn(`  ⏳ Mercado ainda não resolvido pela Gamma API — tentando depois.`);
@@ -210,8 +170,25 @@ async function autoResolve() {
       continue;
     }
 
-    logger.info(`  Vencedor  : ${winner}`);
-    resolveRoundWithOutcome(round, winner);
+    // Handle TOKEN_WIN/TOKEN_LOSE from CLOB API
+    let wonBool;
+    if (winner === "TOKEN_WIN") {
+      wonBool = true;
+      logger.info(`  CLOB confirmou: ${round.outcome} GANHOU`);
+    } else if (winner === "TOKEN_LOSE") {
+      wonBool = false;
+      logger.info(`  CLOB confirmou: ${round.outcome} PERDEU`);
+    } else {
+      wonBool = winner === round.outcome;
+      logger.info(`  Vencedor  : ${winner}`);
+    }
+
+    const payout = wonBool ? round.shares_matched * 1.0 : 0;
+    const label  = wonBool
+      ? `✅ Round #${round.id} — ${round.market_name?.slice(0,30)} — Apostou: ${round.outcome} | Venceu: ${winner !== "TOKEN_WIN" && winner !== "TOKEN_LOSE" ? winner : round.outcome} | Profit: +${(payout - (round.usdc_submitted ?? 0)).toFixed(2)} USDC`
+      : `❌ Round #${round.id} — ${round.market_name?.slice(0,30)} — Apostou: ${round.outcome} | Profit: -${(round.usdc_submitted ?? 0).toFixed(2)} USDC`;
+    logger.info(label);
+    resolveRound(round.id, { won: wonBool, payout });
     resolved++;
 
     // Pequena pausa entre chamadas à API
