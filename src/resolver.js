@@ -50,29 +50,31 @@ async function fetchMarketOutcome(conditionId, tokenId = null) {
     // Se temos o token_id, verificamos o preço atual do token
     // Preço ≈ 0 → token perdeu; Preço ≈ 1 → token ganhou
     if (tokenId) {
-      try {
-        const clobRes = await axios.get(
-          `https://clob.polymarket.com/price?token_id=${tokenId}&side=BUY`,
-          { timeout: 8_000 }
-        );
-        const price = parseFloat(clobRes.data?.price ?? clobRes.data?.mid ?? -1);
-        logger.info(`  CLOB price para token ${tokenId.slice(0,12)}...: ${price}`);
+      // Tenta múltiplos endpoints CLOB para obter preço do token
+      const clobEndpoints = [
+        `https://clob.polymarket.com/price?token_id=${tokenId}&side=BUY`,
+        `https://clob.polymarket.com/midpoint?token_id=${tokenId}`,
+        `https://clob.polymarket.com/last-trade-price?token_id=${tokenId}`,
+      ];
 
-        if (price >= 0.98) {
-          // Token Up ou Down está valendo quase 1 → é o vencedor
-          // Precisamos saber qual outcome esse token representa
-          // Isso é determinado pelo banco — se outcome='Up' e price≈1 → Up ganhou
-          return "TOKEN_WIN"; // sinal especial — caller resolve pelo outcome do round
-        }
-        if (price <= 0.02) {
-          return "TOKEN_LOSE"; // token perdeu
-        }
-        // Preço intermediário → ainda não resolveu
-        logger.info(`  CLOB: preço intermediário (${price}) — mercado ainda não resolveu`);
-        return null;
-      } catch (clobErr) {
-        logger.info(`  CLOB indisponível: ${clobErr.message} — tentando Gamma...`);
+      for (const endpoint of clobEndpoints) {
+        try {
+          const clobRes = await axios.get(endpoint, { timeout: 8_000 });
+          const price = parseFloat(
+            clobRes.data?.price ?? clobRes.data?.mid ?? clobRes.data?.price ?? -1
+          );
+          if (price < 0) continue;
+
+          logger.info(`  CLOB (${endpoint.split('/').pop()}): ${price}`);
+
+          if (price >= 0.98) return "TOKEN_WIN";
+          if (price <= 0.02) return "TOKEN_LOSE";
+
+          logger.info(`  CLOB: preço intermediário (${price}) — mercado ainda não resolveu`);
+          return null;
+        } catch { /* tenta próximo endpoint */ }
       }
+      logger.info(`  CLOB indisponível para token ${tokenId.slice(0,12)}... — tentando Gamma...`);
     }
 
     // ── Método 2: Gamma API (múltiplos endpoints) ────────────
@@ -185,24 +187,45 @@ async function resolveMatchedViaDataApi(round) {
 
     logger.info(`  Data API: ${positions.length} posição(ões) encontrada(s)`);
 
-    // Posição com curPrice=1 ou redeemable=true → vencedor
     for (const pos of positions) {
-      const price = parseFloat(pos.curPrice ?? pos.currentPrice ?? 0);
+      const price = parseFloat(pos.curPrice ?? pos.currentPrice ?? -1);
       const outcome = pos.outcome || pos.title || "";
       logger.info(`    outcome=${outcome} curPrice=${price} size=${pos.size}`);
 
-      if (price >= 0.98) return outcome; // encontrou vencedor
+      if (price >= 0.98) return outcome;           // token ganhou
+      if (price <= 0.02 && price >= 0) {
+        // Token perdeu — retorna o outcome OPOSTO
+        logger.info(`    Token ${outcome} perdeu (price≈0) → vencedor é o outro lado`);
+        return outcome === "Up" ? "Down" : "Up";
+      }
     }
 
-    // Nenhum price=1 mas se a posição tem size > 0 e cashBalance > 0 → ganhou
+    // cashBalance > 0 → ganhou
     const winner = positions.find(p => parseFloat(p.cashBalance ?? 0) > 0);
     if (winner) return winner.outcome || winner.title;
 
+    // Última tentativa: verifica pelo CLOB se o token ainda tem book
+    // 404 no book = token resolvido. Mas precisamos saber quem ganhou.
+    // Tenta o token oposto — se o oposto também dá 404, ambos resolveram.
+    // Nesse caso, verifica via CLOB books endpoint com ambos os tokens
     return null;
   } catch (err) {
     logger.info(`  Data API indisponível: ${err.message}`);
     return null;
   }
+}
+
+// ============================================================
+// Resolve manualmente um round por ID com resultado conhecido
+// Para os casos onde todas as APIs falham
+// ============================================================
+async function resolveManual(roundId, won) {
+  const db = getDb();
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+  if (!round) { logger.error(`Round #${roundId} não encontrado`); return; }
+  const payout = won ? round.shares_matched * 1.0 : 0;
+  resolveRound(roundId, { won, payout });
+  logger.success(`Round #${roundId} resolvido manualmente: ${won ? "✅ ganhou" : "❌ perdeu"} | profit=${(payout - round.usdc_submitted).toFixed(2)}`);
 }
 
 async function autoResolve() {

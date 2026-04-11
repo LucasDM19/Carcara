@@ -959,6 +959,30 @@ async function main() {
     // -------------------------------------------------------
     // RESOLVE: Auto-resolução via Gamma API
     // -------------------------------------------------------
+    case "resolve:pending": {
+      const { getDb: _getDb } = require("./db");
+      const _db = _getDb();
+      const pending = _db.prepare(`
+        SELECT id, created_at, market_name, market_end_date,
+               outcome, shares_matched, usdc_submitted, token_id
+        FROM rounds
+        WHERE resolved=0 AND order_status='MATCHED'
+          AND datetime(market_end_date) < datetime('now')
+        ORDER BY market_end_date ASC
+      `).all();
+      console.log("\nRounds MATCHED pendentes de resolução manual:");
+      console.log("  ID      Data apostada    Mercado                              Outcome  Shares   USDC");
+      pending.forEach(function(r) {
+        console.log("  " + String(r.id).padEnd(7) + r.created_at.slice(0,16).padEnd(17) +
+          (r.market_name||"").slice(0,35).padEnd(36) + r.outcome.padEnd(9) +
+          String(r.shares_matched||0).padEnd(9) + r.usdc_submitted);
+      });
+      console.log("\nPara resolver manualmente:");
+      console.log("  node src/index.js --mode=resolve:manual --id=ID --won=true  (ganhou)");
+      console.log("  node src/index.js --mode=resolve:manual --id=ID --won=false (perdeu)");
+      break;
+    }
+
     case "resolve:debug": {
       const { getDb } = require("./db");
       const db = getDb();
