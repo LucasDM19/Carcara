@@ -143,6 +143,68 @@ async function fetchMarketOutcome(conditionId, tokenId = null) {
 }
 
 
+// ============================================================
+// Limpa rounds DRY irresolvíveis (mercados fechados sem dados)
+// Marca como resolved=1, won=NULL — não afeta P&L real
+// ============================================================
+async function purgeUnresolvableDryRounds() {
+  const db = getDb();
+
+  // Rounds DRY com end_date > 24h atrás que CLOB retorna 404
+  // Consideramos irresolvíveis após 48h sem resolução
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare(`
+    UPDATE rounds
+    SET resolved = 1, won = NULL, payout = 0, profit = 0
+    WHERE resolved = 0
+      AND order_status = 'DRY'
+      AND datetime(market_end_date) < datetime(?)
+  `).run(cutoff);
+
+  logger.info(`🧹 Rounds DRY irresolvíveis limpos: ${result.changes}`);
+  return result.changes;
+}
+
+// ============================================================
+// Tenta resolver MATCHED rounds via Data API (posições da carteira)
+// ============================================================
+async function resolveMatchedViaDataApi(round) {
+  try {
+    // Data API: busca posições pelo proxy wallet
+    const config = require("./config");
+    const proxyWallet = config.proxyWallet;
+    if (!proxyWallet) return null;
+
+    const res = await axios.get(
+      `https://data-api.polymarket.com/positions?user=${proxyWallet}&market=${round.condition_id}&sizeThreshold=0`,
+      { timeout: 10_000 }
+    );
+
+    const positions = res.data;
+    if (!Array.isArray(positions) || positions.length === 0) return null;
+
+    logger.info(`  Data API: ${positions.length} posição(ões) encontrada(s)`);
+
+    // Posição com curPrice=1 ou redeemable=true → vencedor
+    for (const pos of positions) {
+      const price = parseFloat(pos.curPrice ?? pos.currentPrice ?? 0);
+      const outcome = pos.outcome || pos.title || "";
+      logger.info(`    outcome=${outcome} curPrice=${price} size=${pos.size}`);
+
+      if (price >= 0.98) return outcome; // encontrou vencedor
+    }
+
+    // Nenhum price=1 mas se a posição tem size > 0 e cashBalance > 0 → ganhou
+    const winner = positions.find(p => parseFloat(p.cashBalance ?? 0) > 0);
+    if (winner) return winner.outcome || winner.title;
+
+    return null;
+  } catch (err) {
+    logger.info(`  Data API indisponível: ${err.message}`);
+    return null;
+  }
+}
+
 async function autoResolve() {
   const pending = getPendingRounds();
 
@@ -151,13 +213,18 @@ async function autoResolve() {
     return { resolved: 0, skipped: 0 };
   }
 
-  logger.info(`🔍 ${pending.length} round(s) pendente(s) de resolução...`);
+  // Limpa rounds DRY irresolvíveis (>48h sem resolução da Gamma)
+  await purgeUnresolvableDryRounds();
+
+  // Re-busca pending após limpeza
+  const pendingAfterPurge = getPendingRounds();
+  logger.info(`🔍 ${pendingAfterPurge.length} round(s) MATCHED pendente(s) de resolução...`);
   logger.divider();
 
   let resolved = 0;
   let skipped = 0;
 
-  for (const round of pending) {
+  for (const round of pendingAfterPurge) {
     logger.info(`Verificando Round #${round.id}: ${round.market_name?.slice(0, 50)}`);
     logger.info(`  End date  : ${round.market_end_date}`);
     logger.info(`  Apostou   : ${round.outcome} | ${round.shares_matched} shares`);
@@ -165,7 +232,18 @@ async function autoResolve() {
     const winner = await fetchMarketOutcome(round.condition_id, round.token_id);
 
     if (!winner) {
-      logger.warn(`  ⏳ Mercado ainda não resolvido pela Gamma API — tentando depois.`);
+      // Última tentativa: Data API via posições da carteira
+      logger.info(`  Tentando Data API como último recurso...`);
+      const dataApiResult = await resolveMatchedViaDataApi(round);
+      if (dataApiResult) {
+        logger.info(`  Data API: vencedor = ${dataApiResult}`);
+        const wonData = dataApiResult === round.outcome;
+        const payoutData = wonData ? round.shares_matched * 1.0 : 0;
+        resolveRound(round.id, { won: wonData, payout: payoutData });
+        resolved++;
+        continue;
+      }
+      logger.warn(`  ⏳ Mercado irresolvível após todas as tentativas — pulando.`);
       skipped++;
       continue;
     }
