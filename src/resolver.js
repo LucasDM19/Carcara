@@ -152,14 +152,14 @@ async function purgeUnresolvableDryRounds() {
 
   // Rounds DRY com end_date > 24h atrás que CLOB retorna 404
   // Consideramos irresolvíveis após 48h sem resolução
-  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  // Limpa todos os DRY não resolvidos com end_date no passado
   const result = db.prepare(`
     UPDATE rounds
     SET resolved = 1, won = NULL, payout = 0, profit = 0
     WHERE resolved = 0
       AND order_status = 'DRY'
-      AND datetime(market_end_date) < datetime(?)
-  `).run(cutoff);
+      AND datetime(market_end_date) < datetime('now')
+  `).run();
 
   logger.info(`🧹 Rounds DRY irresolvíveis limpos: ${result.changes}`);
   return result.changes;
@@ -213,18 +213,28 @@ async function autoResolve() {
     return { resolved: 0, skipped: 0 };
   }
 
-  // Limpa rounds DRY irresolvíveis (>48h sem resolução da Gamma)
+  // Limpa rounds DRY irresolvíveis
   await purgeUnresolvableDryRounds();
 
-  // Re-busca pending após limpeza
-  const pendingAfterPurge = getPendingRounds();
-  logger.info(`🔍 ${pendingAfterPurge.length} round(s) MATCHED pendente(s) de resolução...`);
+  // Busca APENAS rounds MATCHED reais pendentes
+  const db2 = getDb();
+  const pendingMatched = db2.prepare(`
+    SELECT id, condition_id, market_name, market_end_date,
+           outcome, shares_matched, usdc_submitted, order_status, token_id
+    FROM rounds
+    WHERE resolved = 0
+      AND order_status = 'MATCHED'
+      AND datetime(market_end_date) < datetime('now')
+    ORDER BY market_end_date ASC
+  `).all();
+
+  logger.info(`🔍 ${pendingMatched.length} round(s) MATCHED reais pendente(s) de resolução...`);
   logger.divider();
 
   let resolved = 0;
   let skipped = 0;
 
-  for (const round of pendingAfterPurge) {
+  for (const round of pendingMatched) {
     logger.info(`Verificando Round #${round.id}: ${round.market_name?.slice(0, 50)}`);
     logger.info(`  End date  : ${round.market_end_date}`);
     logger.info(`  Apostou   : ${round.outcome} | ${round.shares_matched} shares`);
