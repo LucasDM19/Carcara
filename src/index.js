@@ -114,9 +114,10 @@ async function main() {
       logger.info(`   Ctrl+C para parar.`);
       logger.divider();
 
-      // Inicia monitor de volatilidade uma vez — fica ativo o loop todo
+      // Inicia monitor de volatilidade — aguarda dados suficientes para trend
       startVolatilityMonitor();
-      try { await waitForData(15_000); } catch { /* ok */ }
+      logger.info("   Aguardando dados de volatilidade e tendência (60s)...");
+      try { await waitForData(60_000); } catch { /* ok */ }
 
       let iteration = 0;
       let lastConditionId = null;
@@ -748,15 +749,18 @@ async function main() {
           condOk = midOk && timeOk;
           condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (<44% ou >56%)" : "❌ (zona neutra 44-56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"}`;
         } else if (strategyName === "skew-up") {
-          const midOk  = best.midUp > 0.56;
-          // Filtro de tendência baseado em dados:
-          // caindo forte + Up → WR=33.3% (n=9) — eliminar
-          // lateral + Up     → WR=79.3% (n=29) — preservar
+          const midOk      = best.midUp > 0.56;
           const _volState  = getVolatilityState();
-          const trend5     = _volState.trend?.trend5 ?? "desconhecido";
-          const trendOk    = trend5 !== "forte_queda";
+          const trend5     = _volState.trend?.trend5 ?? null;
+          // null/desconhecido = dados insuficientes → bloqueia em strict
+          // forte_queda → bloqueia sempre
+          const trendOk    = trend5 !== null
+            && trend5 !== "desconhecido"
+            && trend5 !== "forte_queda";
           condOk  = midOk && timeOk && trendOk;
-          condDesc = `midUp=${(best.midUp*100).toFixed(1)}% ${midOk ? "✅ (>56%)" : "❌ (≤56%)"} | seconds=${Math.round(sec)}s ${timeOk ? "✅ (5–10min)" : "❌ (fora)"} | trend5=${trend5} ${trendOk ? "✅" : "❌ (forte_queda — bloqueado)"}`;
+          condDesc = "midUp=" + (best.midUp*100).toFixed(1) + "% " + (midOk ? "✅ (>56%)" : "❌ (≤56%)") +
+            " | seconds=" + Math.round(sec) + "s " + (timeOk ? "✅" : "❌") +
+            " | trend5=" + (trend5 ?? "null") + " " + (trendOk ? "✅" : "❌ (bloqueado)");
         } else {
           const midpoint   = decision.outcome === "Up" ? best.midUp : best.midDown;
           const priceDelta = midpoint - (midpoint - config.orderMargin);
@@ -884,6 +888,20 @@ async function main() {
       logger.info("📸 CAPTURE — Coletando dados sem apostar...");
       startVolatilityMonitor();
       try { await waitForData(15_000); } catch { /* ok */ }
+
+      // Para skew-up: aguarda até 90s para ter dados de tendência BTC
+      if (strategyName === "skew-up") {
+        let _waited = 0;
+        while (_waited < 90_000) {
+          const _t = getVolatilityState().trend?.trend5;
+          if (_t && _t !== "desconhecido") break;
+          await new Promise(r => setTimeout(r, 5_000));
+          _waited += 5_000;
+          logger.info("   Aguardando dados de tendência... (" + (_waited/1000) + "s)");
+        }
+        const _ft = getVolatilityState().trend?.trend5;
+        logger.info("   Tendência BTC 5m: " + (_ft ?? "indisponível"));
+      }
 
       const rawMarkets = await findBtcMarketsViaGamma();
       if (!rawMarkets.length) { logger.error("Nenhum mercado."); process.exit(1); }
