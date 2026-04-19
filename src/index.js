@@ -597,6 +597,34 @@ async function main() {
     }
 
     // -------------------------------------------------------
+    // BACKTEST: Projeta desempenho de estratégias sobre dados históricos
+    // -------------------------------------------------------
+    case "backtest": {
+      const { runFullBacktest, runBacktest, printBacktestReport } = require("./backtest");
+      const { getDb } = require("./db");
+      const db = getDb();
+
+      const betArg    = args.find(a => a.startsWith("--bet="))?.split("=")[1];
+      const fromArg   = args.find(a => a.startsWith("--from="))?.split("=")[1];
+      const toArg     = args.find(a => a.startsWith("--to="))?.split("=")[1];
+      const stratArg  = args.find(a => a.startsWith("--strategy="))?.split("=")[1];
+
+      const betSize  = betArg  ? parseFloat(betArg)  : 3.5;
+      const dateFrom = fromArg ?? null;
+      const dateTo   = toArg   ?? null;
+
+      if (stratArg) {
+        // Backtest de uma estratégia específica com detalhes completos
+        const result = runBacktest(db, stratArg, { betSize, dateFrom, dateTo });
+        printBacktestReport(result, stratArg);
+      } else {
+        // Backtest completo com todas as estratégias + ranking
+        runFullBacktest(db, { betSize, dateFrom, dateTo });
+      }
+      break;
+    }
+
+    // -------------------------------------------------------
     // REDEEM: Resgate automático de posições vencedoras
     // -------------------------------------------------------
     case "redeem": {
